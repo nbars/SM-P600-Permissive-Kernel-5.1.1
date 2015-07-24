@@ -10,6 +10,7 @@ out_zimage=$output_dir/zImage
 out_initrd=$output_dir/initramfs.cpio.gz
 out_boot_image=$output_dir/boot.img
 out_odin_pda=$output_dir/boot.tar
+out_heimdall_boot=$output_dir/heimdall_boot.img
 
 if [[ -e "${toolchain_dir}/${toolchain_version}/bin/arm-eabi-gcc" ]]; then
   echo "Toolchain was already downloaded"
@@ -35,6 +36,7 @@ cd $build_dir
 make n1awifi_00_defconfig
 make -j5
 
+#Clean output dir
 rm -rf $output_dir/*
 
 #Move zIamge
@@ -49,6 +51,7 @@ find . | cpio -o -H newc | gzip > $out_initrd
 
 cd $output_dir
 
+#Create boot image
 echo "Creating boot image ${out_boot_image}"
 mkbootimg --kernel $(basename $out_zimage) --ramdisk $(basename $out_initrd) -o $out_boot_image
 
@@ -57,3 +60,10 @@ tar -H ustar -c $(basename $out_boot_image) > $(basename $out_odin_pda)
 
 md5sum $(basename $out_odin_pda) >> $(basename $out_odin_pda)
 mv $out_odin_pda $out_odin_pda.md5
+
+echo "Creating heimdall boot.img file"
+cp $out_boot_image $out_heimdall_boot
+
+echo "Usage:"
+echo "ODIN: Select ${out_odin_pda} as PDA file"
+echo "Heimdall: heimdall flash --BOOT ${out_heimdall_boot}"
