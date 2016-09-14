@@ -19,7 +19,7 @@ be saved in the directory named **out**.
 ## Flashing
 
 ##### Using ODIN
-Select boot.tar as PDA file
+Select boot.tar.md5 as PDA file
 
 ##### Using heimdall
 	heimdall flash --BOOT heimdall_boot.img
