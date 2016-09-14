@@ -1,8 +1,7 @@
 #!/bin/bash
-toolchain_dir=$(pwd)/toolchain
+toolchain_dir=$(pwd)/toolchains
+toolchain_version="4.8"
 build_dir=$(pwd)/kernel-src
-toolchain_version="arm-eabi-4.6"
-arm__build_toolchain_url="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/${toolchain_version}"
 initrd_path=$(pwd)/initrd
 
 output_dir=$(pwd)/out
@@ -12,18 +11,19 @@ out_boot_image=$output_dir/boot.img
 out_odin_pda=$output_dir/boot.tar
 out_heimdall_boot=$output_dir/heimdall_boot.img
 
-if [[ -e "${toolchain_dir}/${toolchain_version}/bin/arm-eabi-gcc" ]]; then
-  echo "Toolchain was already downloaded"
-else
-  mkdir -p $toolchain_dir
-  cd $toolchain_dir
-
-  echo "Cloning ARM build toolchain from ${arm__build_toolchain_url}"
-  git clone $arm__build_toolchain_url
-  echo "Cloning finished!"
+if [[ !-f /usr/bin/cpio ]]; then
+  echo "Missing cpio!"
+  pkgfile /usr/bin/cpio
+  exit 1
 fi
 
-cross_compile="${toolchain_dir}/${toolchain_version}/bin/arm-eabi-"
+if [[ ! -f /usr/bin/mkbootimg ]]; then
+  echo "Missing mkbootimg!"
+  pkgfile /usr/bin/mkbootimg
+  exit 1
+fi
+
+cross_compile="${toolchain_dir}/arm-eabi-${toolchain_version}/bin/arm-eabi-"
 echo "Setting CROSS_COMPILE to ${cross_compile}"
 export CROSS_COMPILE=$cross_compile
 
