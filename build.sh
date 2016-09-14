@@ -73,3 +73,7 @@ cp $out_boot_image $out_heimdall_boot
 echo "Usage:"
 echo "ODIN: Select ${out_odin_pda} as PDA file"
 echo "Heimdall: heimdall flash --BOOT ${out_heimdall_boot}"
+
+cd "$build_dir"
+make clean
+make mrproper
