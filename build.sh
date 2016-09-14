@@ -11,7 +11,7 @@ out_boot_image=$output_dir/boot.img
 out_odin_pda=$output_dir/boot.tar
 out_heimdall_boot=$output_dir/heimdall_boot.img
 
-if [[ !-f /usr/bin/cpio ]]; then
+if [[ ! -f /usr/bin/cpio ]]; then
   echo "Missing cpio!"
   pkgfile /usr/bin/cpio
   exit 1
@@ -24,6 +24,11 @@ if [[ ! -f /usr/bin/mkbootimg ]]; then
 fi
 
 cross_compile="${toolchain_dir}/arm-eabi-${toolchain_version}/bin/arm-eabi-"
+
+if [[ -f /usr/bin/ccache ]]; then
+  cross_compile="ccache ${cross_compile}"
+fi
+
 echo "Setting CROSS_COMPILE to ${cross_compile}"
 export CROSS_COMPILE=$cross_compile
 
@@ -32,7 +37,8 @@ export ARCH=arm
 
 #Building
 cd $build_dir
-#make clean
+make clean
+make mrproper
 make n1awifi_00_defconfig
 make -j5
 
