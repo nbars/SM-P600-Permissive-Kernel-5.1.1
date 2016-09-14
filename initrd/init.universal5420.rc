@@ -54,7 +54,7 @@ on post-fs-data
     chown media_rw media_rw /data/media
     
     # Added for TZ Playready DRM Support
-    mkdir /efs/drm 0700 drm system
+    mkdir /efs/drm 0774 drm system
     mkdir /efs/drm/playready 0775 drm system
 
     setprop vold.post_fs_data_done 1
@@ -315,10 +315,6 @@ on boot
     chown radio system /sys/class/secgpio_check/secgpio_check_all/gpiosleep_check
     chown radio system /sys/class/secgpio_check/secgpio_check_all/checked_sleepGPIO
 
-# IR_LED
-    chown system radio /sys/class/sec/sec_ir/ir_send
-    chown system radio /sys/class/sec/sec_ir/ir_send_result
-
 # Permissions for Barcode Emul
     chown system radio /sys/class/sec/sec_barcode_emul/barcode_send
     chown system radio /sys/class/sec/sec_barcode_emul/barcode_ver_check
@@ -438,6 +434,11 @@ on property:ro.debuggable=1
     write /sys/module/kgdboc/parameters/kgdboc ttyFIQ1
     write /sys/module/fiq_debugger/parameters/kgdb_enable 1
 
+# IR_LED
+on property:sys.boot_completed=1
+    chown system radio /sys/class/sec/sec_ir/ir_send
+    chown system radio /sys/class/sec/sec_ir/ir_send_result
+
 # LPM
 on property:ro.bootmode=charger
     mount ext4 /dev/block/mmcblk0p20 /system wait ro
@@ -470,11 +471,18 @@ service gpsd /system/bin/gpsd -c /system/etc/gps.xml
     group system inet net_raw
     ioprio be 0
 
+service prepare_param /system/bin/prepare_param.sh /dev/block/platform/dw_mmc.0/by-name/PARAM
+    class core
+    user root
+    group root
+    seclabel u:r:prepare_param:s0
+    oneshot
+
 # MobiCore startup
 service mobicore /system/bin/mcDriverDaemon -r /system/app/FFFFFFFF000000000000000000000001.drbin -r /system/app/mcRegistry/ffffffffd0000000000000000000000a.tlbin
     class core
     user system
-    group system    
+    group system
 
 # service for TZPR provisioning version check app
 service scranton_RD /system/bin/scranton_RD
