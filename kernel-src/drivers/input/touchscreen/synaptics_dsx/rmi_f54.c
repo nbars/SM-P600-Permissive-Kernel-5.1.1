@@ -47,6 +47,8 @@
 #define FORCE_TIMEOUT_100MS 10
 #define STATUS_WORK_INTERVAL 20 /* ms */
 
+#define DO_PREPATION_RETRY_COUNT	2
+
 /*
 #define RAW_HEX
 #define HUMAN_READABLE
@@ -1063,6 +1065,9 @@ struct f54_control {
 #define CMD_PARAM_NUM 8
 #define CMD_RESULT_STR_LEN 768
 #define RPT_DATA_STRNCAT_LENGTH 9
+
+#define DEBUG_RESULT_STR_LEN	1024
+#define MAX_VAL_OFFSET_AND_LENGTH	10
 #define DEBUG_STR_LEN	(CMD_STR_LEN * 2)
 
 #define DEBUG_PRNT_SCREEN(_dest, _temp, _length, fmt, ...)	\
@@ -1121,6 +1126,9 @@ static ssize_t cmd_list_show(struct device *dev,
 static ssize_t debug_address_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
 
+static ssize_t debug_register_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+
 static ssize_t debug_register_store(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t count);
 
@@ -1137,7 +1145,7 @@ static DEVICE_ATTR(cmd_status, S_IRUGO, cmd_status_show, NULL);
 static DEVICE_ATTR(cmd_result, S_IRUGO, cmd_result_show, NULL);
 static DEVICE_ATTR(cmd_list, S_IRUGO, cmd_list_show, NULL);
 static DEVICE_ATTR(debug_address, S_IRUGO, debug_address_show, NULL);
-static DEVICE_ATTR(debug_register, S_IRUGO, NULL, debug_register_store);
+static DEVICE_ATTR(debug_register, S_IRUGO | S_IWUSR, debug_register_show, debug_register_store);
 #ifdef USE_GUEST_THREAD
 static DEVICE_ATTR(guest_pkt_dbg_level, S_IRUGO | S_IWUSR, guest_pkt_dbg_level_show, guest_pkt_dbg_level_store);
 #endif
@@ -1185,6 +1193,7 @@ static struct attribute_group cmd_attr_group = {
  *		( 0: disalbe, 1: enable)
  * hover_no_sleep_enable : To keep the no sleep state before enter the hover test.
  *		This command was requested by Display team /HW.
+ * hover_set_edge_rx : To change grip edge exclustion RX value during hover factory test.
  * glove_mode : Set glove mode on/off
  * clear_cover_mode : Set the touch sensitivity mode. we are supporting various mode
 		in sensitivity such as (glove, flip cover, clear cover mode) and they are controled
@@ -1219,6 +1228,7 @@ static void run_trx_short_test(void);
 #ifdef PROXIMITY_MODE
 static void hover_enable(void);
 static void hover_no_sleep_enable(void);
+static void hover_set_edge_rx(void);
 #endif
 static void set_jitter_level(void);
 #ifdef GLOVE_MODE
@@ -1273,6 +1283,7 @@ struct ft_cmd ft_cmds[] = {
 #ifdef PROXIMITY_MODE
 	{FT_CMD("hover_enable", hover_enable),},
 	{FT_CMD("hover_no_sleep_enable", hover_no_sleep_enable),},
+	{FT_CMD("hover_set_edge_rx", hover_set_edge_rx),},
 #endif
 	{FT_CMD("set_jitter_level", set_jitter_level),},
 	{FT_CMD("handgrip_enable", not_support_cmd),},
@@ -2418,148 +2429,186 @@ static ssize_t cmd_result_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%s\n", data->cmd_result);
 }
 
+static char debug_buffer[DEBUG_RESULT_STR_LEN];
+
 static ssize_t cmd_list_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	int ii = 0;
-	char buffer[CMD_RESULT_STR_LEN];
-	char buffer_name[CMD_STR_LEN];
+	char buffer_name[CMD_STR_LEN] = {0,};
 
-	snprintf(buffer, 30, "++factory command list++\n");
+	memset(debug_buffer, 0, DEBUG_RESULT_STR_LEN);
+
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_name, CMD_STR_LEN, "++factory command list++\n");
 	while (strncmp(ft_cmds[ii].cmd_name, "not_support_cmd", 16) != 0) {
-		snprintf(buffer_name, CMD_STR_LEN, "%s\n", ft_cmds[ii].cmd_name);
-		strcat(buffer, buffer_name);
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_name, CMD_STR_LEN, "%s\n", ft_cmds[ii].cmd_name);
 		ii++;
 	}
 
-	return snprintf(buf, PAGE_SIZE, "%s\n", buffer);
+	return snprintf(buf, PAGE_SIZE, "%s\n", debug_buffer);
 }
 
-/* Sysfses For debug address, register... */
 static ssize_t debug_address_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct synaptics_rmi4_data *rmi4_data = f54->rmi4_data;
 	struct synaptics_rmi4_f51_handle *f51 = rmi4_data->f51;
-
-	char buffer[CMD_RESULT_STR_LEN] = {0,};
 	char buffer_temp[DEBUG_STR_LEN] = {0,};
 
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "\n### F12 User control Registers ###\n");
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F12_2D_CTRL11(jitter)\t 0x%04x, 0x%02x\n",
+	memset(debug_buffer, 0, DEBUG_RESULT_STR_LEN);
+
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### F12 User control Registers ###\n");
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F12_2D_CTRL11(jitter)\t 0x%04x, 0x%02x\n",
 			rmi4_data->f12.ctrl11_addr, 0xFF);
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F12_2D_CTRL15(threshold)\t 0x%04x, 0x%02x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F12_2D_CTRL15(threshold)\t 0x%04x, 0x%02x\n",
 			rmi4_data->f12.ctrl15_addr, 0xFF);
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F12_2D_CTRL26(glove)\t 0x%04x, 0x%02x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F12_2D_CTRL23(obj_type)\t 0x%04x, 0x%02x\n",
+			rmi4_data->f12.ctrl23_addr, rmi4_data->f12.obj_type_enable);
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F12_2D_CTRL26(glove)\t 0x%04x, 0x%02x\n",
 			rmi4_data->f12.ctrl26_addr, rmi4_data->f12.feature_enable);
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F12_2D_CTRL28(report)\t 0x%04x, 0x%02x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F12_2D_CTRL28(report)\t 0x%04x, 0x%02x\n",
 			rmi4_data->f12.ctrl28_addr, rmi4_data->f12.report_enable);
 
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "\n### F51 User control Registers ###\n");
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL00(proximity)\t 0x%04x, 0x%02x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### F51 User control Registers ###\n");
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL00(proximity)\t 0x%04x, 0x%02x\n",
 			f51->proximity_enables_addr, f51->proximity_enables);
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL01(general)\t 0x%04x, 0x%02x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL01(general)\t 0x%04x, 0x%02x\n",
 			f51->general_control_addr, f51->general_control);
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL02(general2)\t 0x%04x, 0x%02x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL02(general2)\t 0x%04x, 0x%02x\n",
 			f51->general_control_2_addr, f51->general_control_2);
 #ifdef SIDE_TOUCH
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_DATA (Side button)\t 0x%04x, 0x%02x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_DATA (Side button)\t 0x%04x, 0x%02x\n",
 			f51->side_button_data_addr, 0xFF);
 #endif
 #ifdef USE_DETECTION_FLAG_2
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_DATA (Detection flag2)\t 0x%04x, 0x%02x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_DATA (Detection flag2)\t 0x%04x, 0x%02x\n",
 			f51->detection_flag_2_addr, 0xFF);
 #endif
 #ifdef EDGE_SWIPE
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_DATA (Edge swipe)\t 0x%04x, 0x%02x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_DATA (Edge swipe)\t 0x%04x, 0x%02x\n",
 			f51->edge_swipe_data_addr, 0xFF);
 #endif
 
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "\n### Manual defined offset ###\n");
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### Manual defined offset ###\n");
+#ifdef PROXIMITY_MODE
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL24(Grip edge exclusion RX)\t 0x%04x\n",
+			f51->grip_edge_exclusion_rx_addr);
+#endif
 #ifdef SIDE_TOUCH
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL78(Side button tap threshold)\t 0x%04x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL78(Side button tap threshold)\t 0x%04x\n",
 			f51->sidebutton_tapthreshold_addr);
 #endif
 #ifdef USE_STYLUS
-	DEBUG_PRNT_SCREEN(buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL87(ForceFingeronEdge)\t 0x%04x\n",
+	DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "#F51_CUSTOM_CTRL87(ForceFingeronEdge)\t 0x%04x\n",
 			f51->forcefinger_onedge_addr);
 #endif
 
-	return snprintf(buf, PAGE_SIZE, "%s\n", buffer);
+	return snprintf(buf, PAGE_SIZE, "%s\n", debug_buffer);
+}
+
+static ssize_t debug_register_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%s\n", debug_buffer);
 }
 
 static ssize_t debug_register_store(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t count)
 {
-#if 0	/* TODO : it will be implmented if i have time -.- */
-	unsigned char param_cnt = 0;
-	char *start;
-	char *end;
-	char *pos;
-	char delim = ',';
-	char buffer[CMD_STR_LEN], cmd[CMD_STR_LEN], cmd_param[CMD_STR_LEN];
-	char cmd;
-	int *param;
-	int length;
 	struct synaptics_rmi4_data *rmi4_data = f54->rmi4_data;
+	unsigned int mode, page, addr, offset, param;
+	unsigned char i;
+	unsigned short register_addr;
+	unsigned char *register_val;
 
-	length = (int)count;
-	if (*(buf + length - 1) == '\n')
-		length--;
+	char buffer_temp[DEBUG_STR_LEN] = {0,};
 
-	memset(cmd, 0x00, sizeof(cmd));
-	memset(cmd_param, 0, sizeof(cmd_param));
-	memset(buffer, 0x00, sizeof(buffer));
+	int retval = 0;
 
-	memcpy(cmd, buf, length);
+	memset(debug_buffer, 0, DEBUG_RESULT_STR_LEN);
 
-	pos = strchr(buf, (int)delim);
-	if (pos)
-		memcpy(buffer, buf, pos - buf);
-	else
-		memcpy(buffer, buf, length);
-	/* find command */
-	list_for_each_entry(ft_cmd_ptr, &data->cmd_list_head, list) {
-		if (!strcmp(buffer, ft_cmd_ptr->cmd_name)) {
-			cmd_found = true;
-			break;
-		}
+	if (sscanf(buf, "%x%x%x%x%x", &mode, &page, &addr, &offset, &param) != 5) {
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### keep below format !!!! ###\n");
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "### mode page_num address offset data ###\n");
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "### (EX: 1 4 15 1 10 > debug_address) ###\n");
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "### Write 0x10 value at 0x415[1] address ###\n");
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "### if packet register, offset mean [register/offset] ###\n");
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "### (EX: 0 4 15 0 a > debug_address) ###\n");
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "### Read 10byte from 0x415 address ###\n");
+		goto out;
 	}
 
-	/* set not_support_cmd */
-	if (!cmd_found) {
-		list_for_each_entry(ft_cmd_ptr,
-			&data->cmd_list_head, list) {
-			if (!strcmp("not_support_cmd", ft_cmd_ptr->cmd_name))
-				break;
-		}
+	if (rmi4_data->touch_stopped) {
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### ERROR : Sensor stopped\n");
+		goto out;
 	}
 
-	/* parsing parameters */
-	if (cmd_found && pos) {
-		pos++;
-		start = pos;
-		do {
-			if ((*pos == delim) || (pos - buf == length)) {
-				end = pos;
-				memset(buffer, 0x00, sizeof(buffer));
-				memcpy(buffer, start, end - start);
-				*(buffer + strlen(buffer)) = '\0';
-				param = data->cmd_param + param_cnt;
-				if (kstrtoint(buffer, 10, param) < 0)
-					break;
-				param_cnt++;
-				start = pos + 1;
+	register_addr = (page << 8) | addr;
+
+	if (mode) {
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### Write [0x%02x]value at [0x%04x/0x%02x]address.\n",
+			param, register_addr, offset);
+
+		if (offset) {
+			if (offset > MAX_VAL_OFFSET_AND_LENGTH) {
+				DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### offset is too large. [ < %d]\n", MAX_VAL_OFFSET_AND_LENGTH);
+				goto out;
 			}
-			pos++;
-		} while (pos - buf <= length);
+			register_val = kzalloc(offset + 1, GFP_KERNEL);
+
+			retval = synaptics_rmi4_access_register(rmi4_data, SYNAPTICS_ACCESS_READ, register_addr, offset, register_val);
+			if (retval < 0) {
+				DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### Failed to read\n");
+				goto free_mem;
+			}
+			register_val[offset] = param;
+
+			for (i = 0; i < offset; i++)
+				DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "### offset[%d] --> 0x%02x ###\n", i, register_val[i]);
+
+			retval = synaptics_rmi4_access_register(rmi4_data, SYNAPTICS_ACCESS_WRITE, register_addr, offset, register_val);
+			if (retval < 0) {
+				DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### Failed to write\n");
+				goto free_mem;
+			}
+		} else {
+			register_val = kzalloc(1, GFP_KERNEL);
+
+			*register_val = param;
+
+			DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "### 0x%04x --> 0x%02x ###\n", register_addr, *register_val);
+
+			retval = synaptics_rmi4_access_register(rmi4_data, SYNAPTICS_ACCESS_WRITE, register_addr, 1, register_val);
+			if (retval < 0) {
+				DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### Failed to write\n");
+				goto free_mem;
+			}
+		}
+	} else {
+		DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### Read [%u]byte from [0x%04x]address.\n",
+			param, register_addr);
+
+		if (param > MAX_VAL_OFFSET_AND_LENGTH) {
+			DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### length is too large. [ < %d]\n", MAX_VAL_OFFSET_AND_LENGTH);
+			goto out;
+		}
+
+		register_val = kzalloc(param, GFP_KERNEL);
+
+		retval = synaptics_rmi4_access_register(rmi4_data, SYNAPTICS_ACCESS_READ, register_addr, param, register_val);
+		if (retval < 0) {
+			DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "\n### Failed to read\n");
+			goto free_mem;
+		}
+
+		for (i = 0; i < param; i++)
+			DEBUG_PRNT_SCREEN(debug_buffer, buffer_temp, DEBUG_STR_LEN, "### offset[%d] --> 0x%02x ###\n", i, register_val[i]);
 	}
 
-	tsp_debug_info(true, &rmi4_data->i2c_client->dev, "%s: Command = %s\n",
-			__func__, buf);
+free_mem:
+	kfree(register_val);
 
-	ft_cmd_ptr->cmd_func();
-#endif
+out:
 	return count;
 }
 
@@ -2732,7 +2781,7 @@ static bool synaptics_skip_firmware_update(struct synaptics_rmi4_data *rmi4_data
 			__func__);
 		goto out;
 	}
-
+#if 0
 	if (rmi4_data->ic_revision_of_bin != rmi4_data->ic_revision_of_ic) {
 		tsp_debug_info(true, &rmi4_data->i2c_client->dev, "%s: Skip update because revision is mismatched.\n",
 			__func__);
@@ -2744,8 +2793,21 @@ static bool synaptics_skip_firmware_update(struct synaptics_rmi4_data *rmi4_data
 			__func__);
 		return true;
 	}
+#else
+	if ((rmi4_data->ic_revision_of_bin == rmi4_data->ic_revision_of_ic) &&
+		(rmi4_data->fw_version_of_bin < rmi4_data->fw_version_of_ic)) {
+		tsp_debug_info(true, &rmi4_data->i2c_client->dev,
+			"%s: Do not need to update\n", __func__);
+		return true;
+	}
+#endif
 
+#if 0
 	if (rmi4_data->fw_version_of_bin == rmi4_data->fw_version_of_ic) {
+#else
+	if ((rmi4_data->ic_revision_of_bin == rmi4_data->ic_revision_of_ic) &&
+		(rmi4_data->fw_version_of_bin == rmi4_data->fw_version_of_ic)) {
+#endif
 #ifdef CHECK_PR_NUMBER
 		if (!synaptics_check_pr_number(rmi4_data, fw_entry))
 			goto out;
@@ -3224,7 +3286,9 @@ static void run_rawcap_read(void)
 	short cur_value;
 	struct factory_data *data = f54->factory_data;
 	struct synaptics_rmi4_data *rmi4_data = f54->rmi4_data;
-	unsigned char command = 0x01;
+	unsigned char cmd_state = CMD_STATUS_RUNNING;
+	unsigned char no_sleep = 0;
+	int retry = DO_PREPATION_RETRY_COUNT;
 
 	set_default_result(data);
 
@@ -3233,22 +3297,62 @@ static void run_rawcap_read(void)
 			__func__, rmi4_data->touch_stopped ? "stopped" : "Sleep state");
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "TSP is %s",
 			rmi4_data->touch_stopped ? "off" : "sleep");
-		data->cmd_state = CMD_STATUS_NOT_APPLICABLE;
+		cmd_state = CMD_STATUS_NOT_APPLICABLE;
 		goto out;
 	}
 
-	retval = do_preparation();
+	do {
+		retval = f54->fn_ptr->read(rmi4_data,
+			rmi4_data->f01_ctrl_base_addr, &no_sleep, sizeof(no_sleep));
+		if (retval <= 0) {
+			tsp_debug_err(true, &rmi4_data->i2c_client->dev,
+				"%s: fail to read no_sleep[ret:%d]\n",
+				__func__, retval);
+			snprintf(data->cmd_buff, CMD_RESULT_STR_LEN,
+				"%s", "Error read of f01_ctrl00");
+			cmd_state = CMD_STATUS_FAIL;
+			goto out;
+		}
+
+		no_sleep |= NO_SLEEP_ON;
+
+		retval = f54->fn_ptr->write(rmi4_data,
+			rmi4_data->f01_ctrl_base_addr, &no_sleep, sizeof(no_sleep));
+		if (retval <= 0) {
+			tsp_debug_err(true, &rmi4_data->i2c_client->dev,
+				"%s: fail to write no_sleep[ret:%d]\n",
+				__func__, retval);
+			snprintf(data->cmd_buff, CMD_RESULT_STR_LEN,
+				"%s", "Error write to f01_ctrl00");
+			cmd_state = CMD_STATUS_FAIL;
+			goto out;
+		}
+
+		retval = do_preparation();
+		if (retval >= 0)
+			break;
+
+		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to do preparation. reset and retry again.\n",
+			__func__);
+		retval = rmi4_data->reset_device(rmi4_data);
+		if (retval < 0) {
+			tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to issue reset command, error = %d\n",
+					__func__, retval);
+		}
+		retry--;
+	} while (retry > 0);
+
 	if (retval < 0) {
 		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to do preparation\n",
 				__func__);
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", "Error preparation");
-		data->cmd_state = CMD_STATUS_NOT_APPLICABLE;
-		goto out;
+		cmd_state = CMD_STATUS_NOT_APPLICABLE;
+		goto sw_reset;
 	}
 
 	if (!synaptics_rmi4_f54_get_report_type(F54_FULL_RAW_CAP_RX_COUPLING_COMP)) {
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", "Error get report type");
-		data->cmd_state = CMD_STATUS_FAIL;
+		cmd_state = CMD_STATUS_FAIL;
 		goto sw_reset;
 	}
 
@@ -3275,20 +3379,17 @@ static void run_rawcap_read(void)
 	}
 
 	snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%d,%d", min_value, max_value);
-	data->cmd_state = CMD_STATUS_OK;
+	cmd_state = CMD_STATUS_OK;
 
 sw_reset:
-	/* soft reset */
-	retval = f54->fn_ptr->write(rmi4_data,
-		rmi4_data->f01_cmd_base_addr,
-		&command,
-		sizeof(command));
+	retval = rmi4_data->reset_device(rmi4_data);
 	if (retval < 0) {
 		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to issue reset command, error = %d\n",
 				__func__, retval);
 	}
 
 out:
+	data->cmd_state = cmd_state;
 	set_cmd_result(data, data->cmd_buff, strlen(data->cmd_buff));
 }
 
@@ -3381,7 +3482,7 @@ static void run_abscap_read(void)
 	unsigned short num_of_tx;
 	unsigned short num_of_rx;
 	int retval;
-	unsigned char command = 0x01;
+	unsigned char cmd_state = CMD_STATUS_RUNNING;
 
 	set_default_result(data);
 
@@ -3390,13 +3491,13 @@ static void run_abscap_read(void)
 			__func__, rmi4_data->touch_stopped ? "stopped" : "Sleep state");
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "TSP is %s",
 			rmi4_data->touch_stopped ? "off" : "sleep");
-		data->cmd_state = CMD_STATUS_NOT_APPLICABLE;
+		cmd_state = CMD_STATUS_NOT_APPLICABLE;
 		goto out;
 	}
 
 	if (!synaptics_rmi4_f54_get_report_type(F54_ABS_CAP)) {
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", "Error get report type");
-		data->cmd_state = CMD_STATUS_FAIL;
+		cmd_state = CMD_STATUS_FAIL;
 		goto sw_reset;
 	}
 
@@ -3421,20 +3522,17 @@ static void run_abscap_read(void)
 		report_data++;
 	}
 	snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", temp2);
-	data->cmd_state = CMD_STATUS_OK;
+	cmd_state = CMD_STATUS_OK;
 
 sw_reset:
-	/* soft reset */
-	retval = f54->fn_ptr->write(rmi4_data,
-		rmi4_data->f01_cmd_base_addr,
-		&command,
-		sizeof(command));
+	retval = rmi4_data->reset_device(rmi4_data);
 	if (retval < 0) {
 		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to issue reset command, error = %d\n",
 				__func__, retval);
 	}
 
 out:
+	data->cmd_state = cmd_state;
 	set_cmd_result(data, data->cmd_buff, strlen(data->cmd_buff));
 }
 
@@ -3442,6 +3540,7 @@ static void run_absdelta_read(void)
 {
 	struct factory_data *data = f54->factory_data;
 	struct synaptics_rmi4_data *rmi4_data = f54->rmi4_data;
+	struct synaptics_rmi4_f51_handle *f51 = rmi4_data->f51;
 
 	int *report_data;
 	char temp[CMD_STR_LEN];
@@ -3449,6 +3548,10 @@ static void run_absdelta_read(void)
 	unsigned char ii;
 	unsigned short num_of_tx;
 	unsigned short num_of_rx;
+	unsigned char proximity_enables = FINGER_HOVER_EN;
+
+	int retval;
+	unsigned char cmd_state = CMD_STATUS_RUNNING;
 
 	set_default_result(data);
 
@@ -3457,14 +3560,29 @@ static void run_absdelta_read(void)
 			__func__, rmi4_data->touch_stopped ? "stopped" : "Sleep state");
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "TSP is %s",
 			rmi4_data->touch_stopped ? "off" : "sleep");
-		data->cmd_state = CMD_STATUS_NOT_APPLICABLE;
+		cmd_state = CMD_STATUS_NOT_APPLICABLE;
 		goto out;
 	}
 
+	/* Enable hover before read abs delta */
+	retval = f54->fn_ptr->write(rmi4_data, f51->proximity_enables_addr,
+			&proximity_enables,	sizeof(proximity_enables));
+	if (retval < 0) {
+		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to write proximity_enables\n",
+			__func__);
+		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "NG");
+		cmd_state = CMD_STATUS_FAIL;
+		goto out;
+	}
+	/* at least 5 frame time are needed after enable hover
+	 * to get creadible abs delta data( 16.6 * 5 = 88 msec )
+	 */
+	msleep(150);
+
 	if (!synaptics_rmi4_f54_get_report_type(F54_ABS_DELTA)) {
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", "Error get report type");
-		data->cmd_state = CMD_STATUS_FAIL;
-		goto out;
+		cmd_state = CMD_STATUS_FAIL;
+		goto sw_reset;
 	}
 
 	report_data = f54->factory_data->absdelta_data;
@@ -3485,9 +3603,17 @@ static void run_absdelta_read(void)
 		report_data++;
 	}
 	snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", temp2);
-	data->cmd_state = CMD_STATUS_OK;
+	cmd_state = CMD_STATUS_OK;
 
+sw_reset:
+	retval = rmi4_data->reset_device(rmi4_data);
+
+	if (retval < 0) {
+		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to issue reset command, error = %d\n",
+				__func__, retval);
+	}
 out:
+	data->cmd_state = cmd_state;
 	set_cmd_result(data, data->cmd_buff, strlen(data->cmd_buff));
 }
 
@@ -3507,7 +3633,8 @@ static void run_trx_short_test(void)
 	char *report_data;
 	unsigned char ii, jj;
 	int retval = 0;
-	unsigned char command = 0x01;
+	unsigned char cmd_state = CMD_STATUS_RUNNING;
+
 	char temp[CMD_STR_LEN];
 	char temp2[CMD_RESULT_STR_LEN];
 
@@ -3518,14 +3645,14 @@ static void run_trx_short_test(void)
 			__func__, rmi4_data->touch_stopped ? "stopped" : "Sleep state");
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "TSP is %s",
 			rmi4_data->touch_stopped ? "off" : "sleep");
-		data->cmd_state = CMD_STATUS_NOT_APPLICABLE;
+		cmd_state = CMD_STATUS_NOT_APPLICABLE;
 		goto out;
 	}
 
 	disable_irq(rmi4_data->i2c_client->irq);
 	if (!synaptics_rmi4_f54_get_report_type(F54_TREX_SHORTS)) {
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", "Error get report type");
-		data->cmd_state = CMD_STATUS_FAIL;
+		cmd_state = CMD_STATUS_FAIL;
 		goto sw_reset;
 	}
 
@@ -3549,16 +3676,12 @@ static void run_trx_short_test(void)
 	}
 
 	snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", temp2);
-	data->cmd_state = CMD_STATUS_OK;
+	cmd_state = CMD_STATUS_OK;
 
 sw_reset:
 	enable_irq(rmi4_data->i2c_client->irq);
+	retval = rmi4_data->reset_device(rmi4_data);
 
-	/* soft reset */
-	retval = f54->fn_ptr->write(rmi4_data,
-			rmi4_data->f01_cmd_base_addr,
-			&command,
-			sizeof(command));
 	if (retval < 0) {
 		tsp_debug_err(true, &rmi4_data->i2c_client->dev,
 				"%s: Failed to issue reset command, error = %d\n",
@@ -3566,6 +3689,7 @@ sw_reset:
 	}
 
 out:
+	data->cmd_state = cmd_state;
 	set_cmd_result(data, data->cmd_buff, strlen(data->cmd_buff));
 }
 
@@ -3652,6 +3776,43 @@ static void hover_no_sleep_enable(void)
 out:
 	set_cmd_result(data, data->cmd_buff, strlen(data->cmd_buff));
 }
+
+static void hover_set_edge_rx(void)
+{
+	struct factory_data *data = f54->factory_data;
+	struct synaptics_rmi4_data *rmi4_data = f54->rmi4_data;
+	unsigned char edge_exculsion_rx = 0x10;
+	int retval = 0;
+
+	set_default_result(data);
+
+	if (data->cmd_param[0] < 0 || data->cmd_param[0] > 1) {
+		snprintf(data->cmd_buff, sizeof(data->cmd_buff), "NG");
+		data->cmd_state = CMD_STATUS_FAIL;
+		goto out;
+	}
+
+	if (data->cmd_param[0])
+		edge_exculsion_rx = 0x0;
+	else
+		edge_exculsion_rx = 0x10;
+
+	retval = synaptics_rmi4_access_register(rmi4_data, SYNAPTICS_ACCESS_WRITE,
+				rmi4_data->f51->grip_edge_exclusion_rx_addr, sizeof(edge_exculsion_rx), &edge_exculsion_rx);
+	if (retval < 0) {
+		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to write grip edge exclustion rx with [0x%02X].\n",
+				__func__, edge_exculsion_rx);
+		snprintf(data->cmd_buff, sizeof(data->cmd_buff), "NG");
+		data->cmd_state = CMD_STATUS_FAIL;
+		goto out;
+	}
+
+	snprintf(data->cmd_buff, sizeof(data->cmd_buff), "OK");
+	data->cmd_state = CMD_STATUS_OK;
+
+out:
+	set_cmd_result(data, data->cmd_buff, strlen(data->cmd_buff));
+}
 #endif
 
 static void set_jitter_level(void)
@@ -3717,11 +3878,13 @@ static void glove_mode(void)
 		goto out;
 	}
 
-	if (data->cmd_param[0])
+	if (data->cmd_param[0]) {
 		rmi4_data->f12.feature_enable |= GLOVE_DETECTION_EN;
-	else
+		rmi4_data->f12.obj_type_enable |= OBJ_TYPE_GLOVE;
+	} else {
 		rmi4_data->f12.feature_enable &= ~(GLOVE_DETECTION_EN);
-
+		rmi4_data->f12.obj_type_enable &= ~(OBJ_TYPE_GLOVE);
+	}
 	retval = synaptics_rmi4_glove_mode_enables(rmi4_data);
 	if (retval < 0) {
 		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s failed, retval = %d\n",
@@ -3760,9 +3923,11 @@ static void fast_glove_mode(void)
 
 	if (data->cmd_param[0]) {
 		rmi4_data->f12.feature_enable |= FAST_GLOVE_DECTION_EN | GLOVE_DETECTION_EN;
+		rmi4_data->f12.obj_type_enable |= OBJ_TYPE_GLOVE;
 		rmi4_data->fast_glove_state = true;
 	} else {
 		rmi4_data->f12.feature_enable &= ~(FAST_GLOVE_DECTION_EN);
+		rmi4_data->f12.obj_type_enable |= OBJ_TYPE_GLOVE;
 		rmi4_data->fast_glove_state = false;
 	}
 
@@ -3937,8 +4102,11 @@ static void set_sidekey_only_enable(void)
 	struct synaptics_rmi4_data *rmi4_data = f54->rmi4_data;
 	int retval = 0;
 	unsigned char device_control = 0;
+	bool sidekey_only_enable;
 
 	set_default_result(data);
+
+	mutex_lock(&rmi4_data->rmi4_device_mutex);
 
 	if (data->cmd_param[0] < 0 || data->cmd_param[0] > 1) {
 		snprintf(data->cmd_buff, sizeof(data->cmd_buff), "NG");
@@ -3946,12 +4114,9 @@ static void set_sidekey_only_enable(void)
 		goto out;
 	}
 
-	/* TODO: This sysfs will be called by TSP service and it makes that device go to sleep/wake.
-	 * PMS(power manager service) also do same job with "enabled" sysfs under input device.
-	 * So. I think.... If TSP service and PMS do not have synchronization,
-	 * below logic might need mutex lock(rmi4_device_mutex..) to prevent interference.
-	 */
+	sidekey_only_enable = data->cmd_param[0] ? true : false;
 
+	/* Control device_control value */
 	retval = f54->fn_ptr->read(rmi4_data,
 				rmi4_data->f01_ctrl_base_addr, &device_control, sizeof(device_control));
 	if (retval < 0) {
@@ -3962,7 +4127,7 @@ static void set_sidekey_only_enable(void)
 		goto out;
 	}
 
-	if (data->cmd_param[0])
+	if (sidekey_only_enable)
 		device_control &= ~(SENSOR_SLEEP);
 	else
 		device_control |= SENSOR_SLEEP;
@@ -3978,10 +4143,20 @@ static void set_sidekey_only_enable(void)
 		goto out;
 	}
 
+	if (sidekey_only_enable)
+		rmi4_data->sensor_sleep = false;
+	else
+		rmi4_data->sensor_sleep = true;
+
+	tsp_debug_info(true, &rmi4_data->i2c_client->dev, "%s : [F01_CTRL] 0x%02X, [F51_CTRL] 0x%02X/0x%02X/0x%02X]\n",
+		__func__, device_control, rmi4_data->f51->proximity_enables, rmi4_data->f51->general_control, rmi4_data->f51->general_control_2);
+
 	snprintf(data->cmd_buff, sizeof(data->cmd_buff), "OK");
 	data->cmd_state = CMD_STATUS_OK;
 
 out:
+	mutex_unlock(&rmi4_data->rmi4_device_mutex);
+
 	set_cmd_result(data, data->cmd_buff, strlen(data->cmd_buff));
 }
 
@@ -4133,7 +4308,8 @@ static void run_sidekey_abscap_read(void)
 	unsigned char ii;
 	unsigned short num_of_tx;
 	unsigned short num_of_rx;
-	unsigned char command = 0x01;
+	unsigned char cmd_state = CMD_STATUS_RUNNING;
+
 	unsigned char sidekey_production_test;
 	int retval;
 
@@ -4144,7 +4320,7 @@ static void run_sidekey_abscap_read(void)
 			__func__, rmi4_data->touch_stopped ? "stopped" : "Sleep state");
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "TSP is %s",
 			rmi4_data->touch_stopped ? "off" : "sleep");
-		data->cmd_state = CMD_STATUS_NOT_APPLICABLE;
+		cmd_state = CMD_STATUS_NOT_APPLICABLE;
 		goto out;
 	}
 
@@ -4155,7 +4331,7 @@ static void run_sidekey_abscap_read(void)
 		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to read general control 2.\n",
 				__func__);
 		snprintf(data->cmd_buff, sizeof(data->cmd_buff), "NA");
-		data->cmd_state = CMD_STATUS_FAIL;
+		cmd_state = CMD_STATUS_FAIL;
 		goto out;
 	}
 
@@ -4168,7 +4344,7 @@ static void run_sidekey_abscap_read(void)
 		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to write general control 2 register with [0x%02X].\n",
 				__func__, sidekey_production_test);
 		snprintf(data->cmd_buff, sizeof(data->cmd_buff), "NA");
-		data->cmd_state = CMD_STATUS_FAIL;
+		cmd_state = CMD_STATUS_FAIL;
 		goto out;
 	}
 
@@ -4176,7 +4352,7 @@ static void run_sidekey_abscap_read(void)
 
 	if (!synaptics_rmi4_f54_get_report_type(F54_ABS_CAP)) {
 		snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", "Error get report type");
-		data->cmd_state = CMD_STATUS_FAIL;
+		cmd_state = CMD_STATUS_FAIL;
 		goto sw_reset;
 	}
 
@@ -4206,20 +4382,18 @@ static void run_sidekey_abscap_read(void)
 	}
 
 	snprintf(data->cmd_buff, CMD_RESULT_STR_LEN, "%s", temp2);
-	data->cmd_state = CMD_STATUS_OK;
+	cmd_state = CMD_STATUS_OK;
 
 sw_reset:
-	/* soft reset */
-	retval = f54->fn_ptr->write(rmi4_data,
-				rmi4_data->f01_cmd_base_addr,
-				&command,
-				sizeof(command));
+	retval = rmi4_data->reset_device(rmi4_data);
+
 	if (retval < 0) {
 		tsp_debug_err(true, &rmi4_data->i2c_client->dev, "%s: Failed to issue reset command, error = %d\n",
 				__func__, retval);
 	}
 
 out:
+	data->cmd_state = cmd_state;
 	set_cmd_result(data, data->cmd_buff, strlen(data->cmd_buff));
 }
 
@@ -4283,7 +4457,7 @@ static void lozemode_enable(void)
 	}
 
 	rmi4_data->f51->general_control_2 = general_control_2;
-	tsp_debug_info(true, &rmi4_data->i2c_client->dev, "%s: General Control2 [%02X]\n",
+	tsp_debug_info(true, &rmi4_data->i2c_client->dev, "%s: General Control2 [0x%02X]\n",
 			__func__, rmi4_data->f51->general_control_2);
 
 	snprintf(data->cmd_buff, sizeof(data->cmd_buff), "OK");
@@ -5971,6 +6145,7 @@ static void synaptics_rmi4_remove_factory_mode(struct synaptics_rmi4_data *rmi4_
 	if (!f54)
 		return;
 
+	sysfs_remove_link(&f54->factory_data->fac_dev_ts->kobj, "input");
 	sysfs_remove_group(&f54->factory_data->fac_dev_ts->kobj, &cmd_attr_group);
 	if (rmi4_data->sec_tsp_class_create) {
 		device_destroy(sec_class, SEC_CLASS_DEVT_TSP);
@@ -6081,6 +6256,15 @@ static int synaptics_rmi4_init_factory_mode(struct synaptics_rmi4_data *rmi4_dat
 		if (retval < 0) {
 			tsp_debug_err(true, &rmi4_data->i2c_client->dev,
 				"%s: Failed to create sysfs attributes\n",
+				__func__);
+			goto exit_cmd_attr_group;
+		}
+
+		retval = sysfs_create_link(&factory_data->fac_dev_ts->kobj,
+			&rmi4_data->input_dev->dev.kobj, "input");
+		if (retval < 0) {
+			tsp_debug_err(true, &rmi4_data->i2c_client->dev,
+				"%s: Failed to create link\n",
 				__func__);
 			goto exit_cmd_attr_group;
 		}

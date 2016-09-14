@@ -22,17 +22,9 @@
 
 #if defined(CONFIG_REGULATOR_S2ABB01)
 #include <linux/regulator/s2abb01.h>
-#include <linux/i2c-gpio.h>
 #endif
-
-#include <asm/system_info.h>
 
 #define SMDK5420_PMIC_EINT	IRQ_EINT(24)
-
-#if defined(CONFIG_REGULATOR_S2ABB01)
-#define GPIO_MEM_LDO_SDA       EXYNOS5420_GPB3(4)
-#define GPIO_MEM_LDO_SCL       EXYNOS5420_GPB3(5)
-#endif
 
 static struct regulator_consumer_supply s2m_buck1_consumer =
 	REGULATOR_SUPPLY("vdd_mif", NULL);
@@ -153,7 +145,7 @@ static struct regulator_consumer_supply s2m_ldo27_consumer[] = {
 };
 
 static struct regulator_consumer_supply s2m_ldo29_consumer[] = {
- 	REGULATOR_SUPPLY("vtcon_1.8v", NULL),
+ 	REGULATOR_SUPPLY("vtcon_1.9v", NULL),
 };
 
 static struct regulator_consumer_supply s2m_ldo30_consumer[] = {
@@ -246,7 +238,7 @@ SREGULATOR_INIT(ldo26, "cam_af_2.8v_pm", 2800000, 2800000, 0, 0,
 		REGULATOR_CHANGE_STATUS, 0);
 SREGULATOR_INIT(ldo27, "vg3ds_1.0v_ap", 800000, 1000000, 1, 0,
 		REGULATOR_CHANGE_VOLTAGE | REGULATOR_CHANGE_STATUS, 1);
-SREGULATOR_INIT(ldo29, "vtcon_1.8v", 1800000, 1800000, 0, 0,
+SREGULATOR_INIT(ldo29, "vtcon_1.9v", 1900000, 1900000, 0, 0,
 		REGULATOR_CHANGE_STATUS, 0);
 SREGULATOR_INIT(ldo30, "vtouch_1.8v", 1900000, 1900000, 0, 0,
 		REGULATOR_CHANGE_STATUS, 0);
@@ -487,26 +479,11 @@ static struct s2abb01_platform_data exynos5_s2abb01_pdata = {
 	.suspend_on_ctrl	= true,
 };
 
-static struct i2c_board_info i2c_devs27_emul[] __initdata = {
+static struct i2c_board_info hs_i2c_devs4_s2abb01[] __initdata = {
 	{
 		I2C_BOARD_INFO("s2abb01", (0xAA >> 1)),
 		.platform_data	= &exynos5_s2abb01_pdata,
 	}
-};
-
-static struct i2c_gpio_platform_data gpio_i2c_data27 = {
-	.sda_pin = GPIO_MEM_LDO_SDA,
-	.scl_pin = GPIO_MEM_LDO_SCL,
-};
-
-struct platform_device s3c_device_i2c27 = {
-	.name = "i2c-gpio",
-	.id = 27,
-	.dev.platform_data = &gpio_i2c_data27,
-};
-
-static struct platform_device *s2abb01_device[] __initdata = {
-	&s3c_device_i2c27,
 };
 #endif
 
@@ -521,11 +498,20 @@ struct exynos5_platform_i2c hs_i2c3_data __initdata = {
 
 void __init board_chagall_pmic_init(void)
 {
+	int ret = 0;
+
 	exynos5_hs_i2c3_set_platdata(&hs_i2c3_data);
 	i2c_register_board_info(7, hs_i2c_devs3_s2mps11, ARRAY_SIZE(hs_i2c_devs3_s2mps11));
 	platform_device_register(&exynos5_device_hs_i2c3);
 #if defined(CONFIG_REGULATOR_S2ABB01)
-	i2c_register_board_info(27, i2c_devs27_emul, ARRAY_SIZE(i2c_devs27_emul));
-	platform_add_devices(s2abb01_device, ARRAY_SIZE(s2abb01_device));
+	exynos5_hs_i2c4_set_platdata(NULL);
+	ret = i2c_register_board_info(8, hs_i2c_devs4_s2abb01, ARRAY_SIZE(hs_i2c_devs4_s2abb01));
+	if (ret < 0) {
+		pr_err("%s, hs_i2c_devs4_s2abb01 adding i2c fail(err=%d)\n", __func__, ret);
+	}
+	ret = platform_device_register(&exynos5_device_hs_i2c4);
+	if (ret < 0)
+		pr_err("%s, s2abb01 platform device register failed (err=%d)\n",
+			__func__, ret);
 #endif
 }

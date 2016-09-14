@@ -12,6 +12,7 @@
 
 #if defined(CONFIG_KLIMT)
 #define LDO_WITH_REGULATOR
+#define TK_INFORM_CHARGER
 #endif
 
 /* LED LDO Regulator */
@@ -35,6 +36,13 @@ struct touchkey_platform_data {
 	int (*led_power_on) (bool);
 	int (*reset_platform_hw)(void);
 	void (*register_cb)(void *);
+	bool led_control_by_ldo;
 };
 
+#if defined(TK_INFORM_CHARGER)
+void touchkey_charger_infom(bool en);
+struct touchkey_callbacks {
+	void (*inform_charger)(struct touchkey_callbacks *, bool);
+};
+#endif
 #endif /* _LINUX_CYPRESS_TOUCHKEY_I2C_H */

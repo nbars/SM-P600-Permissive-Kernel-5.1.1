@@ -148,7 +148,7 @@ static void resp_avail_cb(struct urb *urb)
 	case 0:
 		/*success*/
 		dev->get_encap_res++;
-		pr_info("[RACB:%d]<\n", iface_num);
+		pr_debug("[RACB:%d]<\n", iface_num);
 		if (brdg && brdg->ops.send_pkt)
 			brdg->ops.send_pkt(brdg->ctx, urb->transfer_buffer,
 				urb->actual_length);
@@ -176,7 +176,7 @@ static void resp_avail_cb(struct urb *urb)
 				"%s: Error re-submitting Int URB %d\n",
 				__func__, status);
 		}
-		pr_info("[CHKRA:%d]>\n", iface_num);
+		pr_debug("[CHKRA:%d]>\n", iface_num);
 	}
 }
 
@@ -201,7 +201,7 @@ static void notification_available_cb(struct urb *urb)
 
 	switch (urb->status) {
 	case 0:
-		pr_info("[NACB:%d]<\n", iface_num);
+		pr_debug("[NACB:%d]<\n", iface_num);
 		/*success*/
 		break;
 	case -ESHUTDOWN:
@@ -240,7 +240,7 @@ static void notification_available_cb(struct urb *urb)
 				__func__, status);
 			goto resubmit_int_urb;
 		} else
-			pr_info("[NRA:%d]>\n", iface_num);
+			pr_debug("[NRA:%d]>\n", iface_num);
 		return;
 	case USB_CDC_NOTIFY_NETWORK_CONNECTION:
 		dev_dbg(&udev->dev, "%s network\n", ctrl->wValue ?
@@ -271,7 +271,7 @@ resubmit_int_urb:
 		dev_err(&udev->dev, "%s: Error re-submitting Int URB %d\n",
 		__func__, status);
 	} else
-		pr_info("[CHKRA:%d]>\n", iface_num);
+		pr_debug("[CHKRA:%d]>\n", iface_num);
 }
 
 int ctrl_bridge_start_read(struct ctrl_bridge *dev)
@@ -293,9 +293,9 @@ int ctrl_bridge_start_read(struct ctrl_bridge *dev)
 		dev_err(&dev->udev->dev,
 			"%s error submitting int urb %d\n",
 			__func__, retval);
-
+		dump_stack();
 	} else
-		pr_info("[CHKRA:%d]>\n", iface_num);
+		pr_debug("[CHKRA:%d]>\n", iface_num);
 
 	return retval;
 }
@@ -335,6 +335,7 @@ int ctrl_bridge_open(struct bridge *brdg)
 		err("dev is null\n");
 		return -ENODEV;
 	}
+	dev_info(&dev->udev->dev, "%s\n", __func__);
 
 	dev->brdg = brdg;
 	dev->snd_encap_cmd = 0;
@@ -350,8 +351,14 @@ int ctrl_bridge_open(struct bridge *brdg)
 		return ret;
 	}
 
-	ret = ctrl_bridge_start_read(dev);
+	if (brdg->ch_id) {
+		/* in case of ap dun,
+		 * this function is called probe funtion. */
+		ret = ctrl_bridge_start_read(dev);
+	}
+
 	usb_autopm_put_interface(dev->intf);
+
 	return ret;
 }
 EXPORT_SYMBOL(ctrl_bridge_open);

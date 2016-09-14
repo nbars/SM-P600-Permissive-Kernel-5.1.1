@@ -2064,9 +2064,14 @@ snd_packed_rd:
 		spin_lock_irq(&md->lock);
 		if (mmc_card_removed(card))
 			req->cmd_flags |= REQ_QUIET;
-		while (ret)
-			ret = __blk_end_request(req, -EIO,
-					blk_rq_cur_bytes(req));
+		if (mmc_card_sd(card) && mmc_card_removed(card)) {
+			if (ret)
+				__blk_end_request_all(req, -EIO);
+		} else {
+			while (ret)
+				ret = __blk_end_request(req, -EIO,
+						blk_rq_cur_bytes(req));
+		}
 		spin_unlock_irq(&md->lock);
 	} else {
 		mmc_blk_abort_packed_req(mq, mq_rq);

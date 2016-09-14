@@ -54,6 +54,8 @@
 #define TC300K_2KEY_DATA	0x0E
 #define TC300K_3KEY_DATA	0x14
 #define TC300K_4KEY_DATA	0x1A
+#define TC300K_5KEY_DATA	0x20
+#define TC300K_6KEY_DATA	0x26
 
 #define TC300K_CH_PCK_H_OFFSET	0x00
 #define TC300K_CH_PCK_L_OFFSET	0x01
@@ -71,6 +73,7 @@
 #define TC300K_CMD_FAC_ON		0x50
 #define TC300K_CMD_FAC_OFF		0x60
 #define TC300K_CMD_CAL_CHECKSUM	0x70
+#define TC300K_CMD_DELAY		50
 
 /* mask */
 #define TC300K_KEY_INDEX_MASK	0x07
@@ -397,6 +400,8 @@ static ssize_t tc300k_led_control(struct device *dev,
 	ret = i2c_smbus_write_byte_data(client, TC300K_CMD_ADDR, cmd);
 	if (ret < 0)
 		dev_err(&client->dev, "%s fail(%d)\n", __func__, ret);
+
+	msleep(TC300K_CMD_DELAY);
 
 	return count;
 }
@@ -998,6 +1003,34 @@ static ssize_t recent_key_show(struct device *dev,
 	return sprintf(buf, "%d\n", value);
 }
 
+static ssize_t recent_key_ref_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct tc300k_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	int ret;
+	u8 buff[6];
+	int value;
+
+	if ((!data->enabled) || data->fw_downloding) {
+		dev_err(&client->dev, "can't excute %s\n", __func__);
+		return -1;
+	}
+
+	if (data->pdata->sensing_ch_num < 6)
+		return sprintf(buf, "%d\n", 0);
+
+	ret = i2c_smbus_read_i2c_block_data(client, TC300K_6KEY_DATA, 6, buff);
+	if (ret != 6) {
+		dev_err(&client->dev, "%s read fail(%d)\n", __func__, ret);
+		return -1;
+	}
+	value = (buff[TC300K_CH_PCK_H_OFFSET] << 8) |
+		buff[TC300K_CH_PCK_L_OFFSET];
+
+	return sprintf(buf, "%d\n", value);
+}
+
 static ssize_t back_key_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -1013,6 +1046,34 @@ static ssize_t back_key_show(struct device *dev,
 	}
 
 	ret = i2c_smbus_read_i2c_block_data(client, TC300K_1KEY_DATA, 6, buff);
+	if (ret != 6) {
+		dev_err(&client->dev, "%s read fail(%d)\n", __func__, ret);
+		return -1;
+	}
+	value = (buff[TC300K_CH_PCK_H_OFFSET] << 8) |
+		buff[TC300K_CH_PCK_L_OFFSET];
+
+	return sprintf(buf, "%d\n", value);
+}
+
+static ssize_t back_key_ref_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct tc300k_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	int ret;
+	u8 buff[6];
+	int value;
+
+	if ((!data->enabled) || data->fw_downloding) {
+		dev_err(&client->dev, "can't excute %s\n", __func__);
+		return -1;
+	}
+
+	if (data->pdata->sensing_ch_num < 6)
+		return sprintf(buf, "%d\n", 0);
+
+	ret = i2c_smbus_read_i2c_block_data(client, TC300K_5KEY_DATA, 6, buff);
 	if (ret != 6) {
 		dev_err(&client->dev, "%s read fail(%d)\n", __func__, ret);
 		return -1;
@@ -1092,7 +1153,36 @@ static ssize_t recent_key_raw(struct device *dev,
 		dev_err(&client->dev, "%s read fail(%d)\n", __func__, ret);
 		return -1;
 	}
-	value = (buff[4] << 8) | buff[5];
+	value = (buff[TC300K_RAW_H_OFFSET] << 8) |
+		buff[TC300K_RAW_L_OFFSET];
+
+	return sprintf(buf, "%d\n", value);
+}
+
+static ssize_t recent_key_raw_ref(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct tc300k_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	int ret;
+	u8 buff[6];
+	int value;
+
+	if ((!data->enabled) || data->fw_downloding) {
+		dev_err(&client->dev, "can't excute %s\n", __func__);
+		return -1;
+	}
+
+	if (data->pdata->sensing_ch_num < 6)
+		return sprintf(buf, "%d\n", 0);
+
+	ret = i2c_smbus_read_i2c_block_data(client, TC300K_6KEY_DATA, 6, buff);
+	if (ret != 6) {
+		dev_err(&client->dev, "%s read fail(%d)\n", __func__, ret);
+		return -1;
+	}
+	value = (buff[TC300K_RAW_H_OFFSET] << 8) |
+		buff[TC300K_RAW_L_OFFSET];
 
 	return sprintf(buf, "%d\n", value);
 }
@@ -1116,7 +1206,36 @@ static ssize_t back_key_raw(struct device *dev,
 		dev_err(&client->dev, "%s read fail(%d)\n", __func__, ret);
 		return -1;
 	}
-	value = (buff[4] << 8) | buff[5];
+	value = (buff[TC300K_RAW_H_OFFSET] << 8) |
+		buff[TC300K_RAW_L_OFFSET];
+
+	return sprintf(buf, "%d\n", value);
+}
+
+static ssize_t back_key_raw_ref(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct tc300k_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	int ret;
+	u8 buff[6];
+	int value;
+
+	if ((!data->enabled) || data->fw_downloding) {
+		dev_err(&client->dev, "can't excute %s\n", __func__);
+		return -1;
+	}
+
+	if (data->pdata->sensing_ch_num < 6)
+		return sprintf(buf, "%d\n", 0);
+
+	ret = i2c_smbus_read_i2c_block_data(client, TC300K_5KEY_DATA, 6, buff);
+	if (ret != 6) {
+		dev_err(&client->dev, "%s read fail(%d)\n", __func__, ret);
+		return -1;
+	}
+	value = (buff[TC300K_RAW_H_OFFSET] << 8) |
+		buff[TC300K_RAW_L_OFFSET];
 
 	return sprintf(buf, "%d\n", value);
 }
@@ -1140,7 +1259,8 @@ static ssize_t dummy_recent_raw(struct device *dev,
 		dev_err(&client->dev, "%s read fail(%d)\n", __func__, ret);
 		return -1;
 	}
-	value = (buff[4] << 8) | buff[5];
+	value = (buff[TC300K_RAW_H_OFFSET] << 8) |
+		buff[TC300K_RAW_L_OFFSET];
 
 	return sprintf(buf, "%d\n", value);
 }
@@ -1164,14 +1284,20 @@ static ssize_t dummy_back_raw(struct device *dev,
 		dev_err(&client->dev, "%s read fail(%d)\n", __func__, ret);
 		return -1;
 	}
-	value = (buff[4] << 8) | buff[5];
+	value = (buff[TC300K_RAW_H_OFFSET] << 8) |
+		buff[TC300K_RAW_L_OFFSET];
 
 	return sprintf(buf, "%d\n", value);
 }
 
 static int tc300k_factory_mode_enable(struct i2c_client *client, u8 cmd)
 {
-	return i2c_smbus_write_byte_data(client, TC300K_CMD_ADDR, cmd);
+	int ret;
+
+	ret = i2c_smbus_write_byte_data(client, TC300K_CMD_ADDR, cmd);
+	msleep(TC300K_CMD_DELAY);
+
+	return ret;
 }
 
 static ssize_t tc300k_factory_mode(struct device *dev,
@@ -1205,7 +1331,7 @@ static ssize_t tc300k_factory_mode(struct device *dev,
 		dev_notice(&client->dev, "factory mode\n");
 		cmd = TC300K_CMD_FAC_ON;
 	} else {
-		dev_notice(&client->dev, "normale mode\n");
+		dev_notice(&client->dev, "normal mode\n");
 		cmd = TC300K_CMD_FAC_OFF;
 	}
 
@@ -1234,7 +1360,12 @@ static ssize_t tc300k_factory_mode_show(struct device *dev,
 
 static int tc300k_glove_mode_enable(struct i2c_client *client, u8 cmd)
 {
-	return i2c_smbus_write_byte_data(client, TC300K_CMD_ADDR, cmd);
+	int ret;
+
+	ret = i2c_smbus_write_byte_data(client, TC300K_CMD_ADDR, cmd);
+	msleep(TC300K_CMD_DELAY);
+
+	return ret;
 }
 
 static ssize_t tc300k_glove_mode(struct device *dev,
@@ -1265,10 +1396,10 @@ static ssize_t tc300k_glove_mode(struct device *dev,
 	}
 
 	if (scan_buffer == 1) {
-		dev_notice(&client->dev, "factory mode\n");
+		dev_notice(&client->dev, "glove mode\n");
 		cmd = TC300K_CMD_GLOVE_ON;
 	} else {
-		dev_notice(&client->dev, "normale mode\n");
+		dev_notice(&client->dev, "normal mode\n");
 		cmd = TC300K_CMD_GLOVE_OFF;
 	}
 
@@ -1294,6 +1425,33 @@ static ssize_t tc300k_glove_mode_show(struct device *dev,
 	return sprintf(buf, "%d\n", data->glove_mode);
 }
 
+static ssize_t tc300k_modecheck_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct tc300k_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	int ret;
+	u8 mode, glove, factory;
+
+	if ((!data->enabled) || data->fw_downloding) {
+		dev_err(&client->dev, "can't excute %s\n", __func__);
+		return -EPERM;
+	}
+
+	ret = i2c_smbus_read_byte_data(client, TC300K_MODE);
+	if (ret < 0) {
+		dev_err(&client->dev, "%s: failed to read threshold_h (%d)\n",
+			__func__, ret);
+		return ret;
+	}
+	mode = ret;
+
+	glove = ((mode & 0xf0) >> 4);
+	factory = mode & 0x0f;
+
+	return sprintf(buf, "glove:%d, factory:%d\n", glove, factory);
+}
+
 static DEVICE_ATTR(touchkey_threshold, S_IRUGO, tc300k_threshold_show, NULL);
 static DEVICE_ATTR(brightness, S_IRUGO | S_IWUSR | S_IWGRP, NULL,
 		tc300k_led_control);
@@ -1306,17 +1464,22 @@ static DEVICE_ATTR(touchkey_firm_version_phone, S_IRUGO,
 static DEVICE_ATTR(touchkey_firm_version_panel, S_IRUGO,
 		tc300k_firm_version_read_show, NULL);
 static DEVICE_ATTR(touchkey_recent, S_IRUGO, recent_key_show, NULL);
+static DEVICE_ATTR(touchkey_recent_ref, S_IRUGO, recent_key_ref_show, NULL);
 static DEVICE_ATTR(touchkey_back, S_IRUGO, back_key_show, NULL);
+static DEVICE_ATTR(touchkey_back_ref, S_IRUGO, back_key_ref_show, NULL);
 static DEVICE_ATTR(touchkey_d_menu, S_IRUGO, dummy_recent_show, NULL);
 static DEVICE_ATTR(touchkey_d_back, S_IRUGO, dummy_back_show, NULL);
 static DEVICE_ATTR(touchkey_recent_raw, S_IRUGO, recent_key_raw, NULL);
+static DEVICE_ATTR(touchkey_recent_raw_ref, S_IRUGO, recent_key_raw_ref, NULL);
 static DEVICE_ATTR(touchkey_back_raw, S_IRUGO, back_key_raw, NULL);
+static DEVICE_ATTR(touchkey_back_raw_ref, S_IRUGO, back_key_raw_ref, NULL);
 static DEVICE_ATTR(touchkey_d_menu_raw, S_IRUGO, dummy_recent_raw, NULL);
 static DEVICE_ATTR(touchkey_d_back_raw, S_IRUGO, dummy_back_raw, NULL);
 static DEVICE_ATTR(touchkey_factory_mode, S_IRUGO | S_IWUSR | S_IWGRP,
 		tc300k_factory_mode_show, tc300k_factory_mode);
 static DEVICE_ATTR(glove_mode, S_IRUGO | S_IWUSR | S_IWGRP,
 		tc300k_glove_mode_show, tc300k_glove_mode);
+static DEVICE_ATTR(modecheck, S_IRUGO, tc300k_modecheck_show, NULL);
 
 static struct attribute *sec_touchkey_attributes[] = {
 	&dev_attr_touchkey_threshold.attr,
@@ -1326,15 +1489,20 @@ static struct attribute *sec_touchkey_attributes[] = {
 	&dev_attr_touchkey_firm_version_phone.attr,
 	&dev_attr_touchkey_firm_version_panel.attr,
 	&dev_attr_touchkey_recent.attr,
+	&dev_attr_touchkey_recent_ref.attr,
 	&dev_attr_touchkey_back.attr,
+	&dev_attr_touchkey_back_ref.attr,
 	&dev_attr_touchkey_d_menu.attr,
 	&dev_attr_touchkey_d_back.attr,
 	&dev_attr_touchkey_recent_raw.attr,
+	&dev_attr_touchkey_recent_raw_ref.attr,
 	&dev_attr_touchkey_back_raw.attr,
+	&dev_attr_touchkey_back_raw_ref.attr,
 	&dev_attr_touchkey_d_menu_raw.attr,
 	&dev_attr_touchkey_d_back_raw.attr,
 	&dev_attr_touchkey_factory_mode.attr,
 	&dev_attr_glove_mode.attr,
+	&dev_attr_modecheck.attr,
 	NULL,
 };
 
@@ -1466,8 +1634,6 @@ static int __devinit tc300k_probe(struct i2c_client *client,
 		set_bit(data->keycode[i], input_dev->keybit);
 	input_set_drvdata(input_dev, data);
 
-	data->glove_mode = true;
-
 	ret = input_register_device(input_dev);
 	if (ret) {
 		dev_err(&client->dev, "fail to register input_dev (%d)\n",
@@ -1501,6 +1667,11 @@ static int __devinit tc300k_probe(struct i2c_client *client,
 		&sec_touchkey_attr_group);
 	if (ret)
 		dev_err(&client->dev, "Failed to create sysfs group\n");
+
+	ret = sysfs_create_link(&data->sec_touchkey->kobj,
+		&data->input_dev->dev.kobj, "input");
+	if (ret)
+		dev_err(&client->dev, "Failed to connect link\n");
 
 	dev_info(&client->dev, "%s done\n", __func__);
 	return 0;
@@ -1608,6 +1779,8 @@ static int tc300k_resume(struct device *dev)
 		ret = i2c_smbus_write_byte_data(client, TC300K_CMD_ADDR, cmd);
 		if (ret < 0)
 			dev_err(&client->dev, "%s led on fail(%d)\n", __func__, ret);
+		else
+			msleep(TC300K_CMD_DELAY);
 	}
 
 	if (data->glove_mode) {

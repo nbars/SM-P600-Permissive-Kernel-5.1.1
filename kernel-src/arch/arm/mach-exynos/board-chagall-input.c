@@ -18,9 +18,6 @@
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_DSX
 #include <linux/i2c/synaptics_rmi.h>
 #endif
-#ifdef CONFIG_KEYBOARD_CYPRESS_TOUCH
-#include <linux/i2c/touchkey_i2c.h>
-#endif
 #ifdef CONFIG_KEYBOARD_TC300K
 #include <linux/i2c/tc300k.h>
 #endif
@@ -37,6 +34,7 @@
 #include "board-universal5420.h"
 
 extern unsigned int system_rev;
+extern unsigned int lcdtype;
 
 #if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 #define TSP_DEBUG_LOG
@@ -47,6 +45,9 @@ extern unsigned int system_rev;
 #define PROJECT_CHAGALL_NAME	"SM-T800"
 #define FW_IMAGE_NAME_5700 "tsp_synaptics/synaptics_chagall_5700.fw"
 #define FW_IMAGE_NAME_5710 "tsp_synaptics/synaptics_chagall_5710.fw"
+#define FW_IMAGE_NAME_5710_USA "tsp_synaptics/synaptics_chagall_usa_5710.fw"
+#define FW_IMAGE_NAME_5710_CHN "tsp_synaptics/synaptics_chagall_chn_5710.fw"
+#define FW_IMAGE_NAME_5710_CAN "tsp_synaptics/synaptics_chagall_can_5710.fw"
 
 #define DSX_I2C_ADDR 0x20
 #define DSX_ATTN_GPIO EXYNOS5420_GPX1(6)
@@ -76,8 +77,8 @@ static int synaptics_power(void *data, bool on)
 	}
 
 	if (on) {
-		regulator_enable(regulator_vdd);
 		regulator_enable(regulator_avdd);
+		regulator_enable(regulator_vdd);
 
 		s3c_gpio_cfgpin(DSX_ATTN_GPIO, S3C_GPIO_SFN(0xf));
 		s3c_gpio_setpull(DSX_ATTN_GPIO, S3C_GPIO_PULL_NONE);
@@ -95,8 +96,8 @@ static int synaptics_power(void *data, bool on)
 		s3c_gpio_setpull(DSX_ATTN_GPIO, S3C_GPIO_PULL_NONE);
 	}
 
-	regulator_put(regulator_vdd);
 	regulator_put(regulator_avdd);
+	regulator_put(regulator_vdd);
 
 	enabled = on;
 
@@ -202,7 +203,15 @@ static struct synaptics_rmi4_platform_data dsx_platformdata = {
 	.led_power_on = ts_led_power_on,
 	.f1a_button_map = &button_map
 #endif
+#if defined(CONFIG_TOUCHSCREEN_CHAGALL_LTE_WIFI_CHN)
+	.firmware_name = FW_IMAGE_NAME_5710_CHN,
+#elif !defined(CONFIG_TOUCHSCREEN_CHAGALLLTE_USA) && !defined (CONFIG_TOUCHSCREEN_CHAGALLLTE_CAN)
 	.firmware_name = FW_IMAGE_NAME_5710,
+#elif defined(CONFIG_TOUCHSCREEN_CHAGALLLTE_CAN)
+	.firmware_name = FW_IMAGE_NAME_5710_CAN,
+#else
+	.firmware_name = FW_IMAGE_NAME_5710_USA,
+#endif
 	.project_name = PROJECT_CHAGALL_NAME,
 };
 
@@ -230,183 +239,37 @@ static void synaptics_dsx_gpio_init(void)
 
 void __init synaptics_dsx_tsp_init(void)
 {
+	u8 touch_rev;
+
 	synaptics_dsx_gpio_init();
 
 	if (lpcharge) {
-		printk(KERN_DEBUG "%s : lpcharge. tsp driver unload\n", __func__);
+		printk(KERN_ERR "%s : lpcharge. tsp driver unload\n", __func__);
+		s3c_gpio_cfgpin(DSX_ATTN_GPIO, S3C_GPIO_INPUT);
+		s3c_gpio_setpull(DSX_ATTN_GPIO, S3C_GPIO_PULL_NONE);
 		return;
 	}
 
+	if (lcdtype == 0) {
+		printk(KERN_ERR "%s lcdtype 0. tsp driver unload\n", __func__);
+		s3c_gpio_cfgpin(DSX_ATTN_GPIO, S3C_GPIO_INPUT);
+		s3c_gpio_setpull(DSX_ATTN_GPIO, S3C_GPIO_PULL_NONE);
+		return;
+	}
+
+	touch_rev = ((lcdtype >> 12) & 0x3);
+
 	synaptics_dsx_i2c_devs0[0].irq = gpio_to_irq(DSX_ATTN_GPIO);
-	if (lcdtype < 5312517)
+	if (touch_rev == 0)
 		synaptics_dsx_i2c_devs0[0].platform_data = &dsx_platformdata_5700;
 	s3c_i2c0_set_platdata(NULL);
 	i2c_register_board_info(0, synaptics_dsx_i2c_devs0,
 		 ARRAY_SIZE(synaptics_dsx_i2c_devs0));
 
-	printk(KERN_DEBUG "%s touch : %d, lcdtype = %d\n",
-		__func__, synaptics_dsx_i2c_devs0[0].irq, lcdtype);
+	printk(KERN_DEBUG "%s touch : %d, lcdtype = %d, touch_rev = %d\n",
+		__func__, synaptics_dsx_i2c_devs0[0].irq, lcdtype, touch_rev);
 }
 #endif
-
-#ifdef CONFIG_KEYBOARD_CYPRESS_TOUCH
-#define GPIO_VTOUCH_LDO_EN EXYNOS5420_GPG1(1)
-#define GPIO_TOUCH_INT EXYNOS5420_GPX0(0)
-#define GPIO_TOUCH_SDA EXYNOS5420_GPB3(4)
-#define GPIO_TOUCH_SCL EXYNOS5420_GPB3(5)
-static struct i2c_board_info touchkey_i2c_info[];
-
-static void touchkey_init_hw(void)
-{
-#ifndef LED_LDO_WITH_REGULATOR
-	gpio_request(GPIO_3_TOUCH_EN, "gpio_3_touch_en");
-#endif
-#ifndef LDO_WITH_REGULATOR
-	gpio_request(GPIO_VTOUCH_LDO_EN, "gpio_vtouch_ldo_en");
-#endif
-	gpio_request(GPIO_TOUCH_INT, "TOUCH_INT");
-	s3c_gpio_setpull(GPIO_TOUCH_INT, S3C_GPIO_PULL_UP);
-	s5p_register_gpio_interrupt(GPIO_TOUCH_INT);
-	gpio_direction_input(GPIO_TOUCH_INT);
-
-	touchkey_i2c_info[0].irq = gpio_to_irq(GPIO_TOUCH_INT);
-	irq_set_irq_type(gpio_to_irq(GPIO_TOUCH_INT), IRQF_TRIGGER_FALLING);
-	s3c_gpio_cfgpin(GPIO_TOUCH_INT, S3C_GPIO_SFN(0xf));
-
-	printk(KERN_ERR "%s touchkey : %d\n",
-		__func__, touchkey_i2c_info[0].irq);
-
-	s3c_gpio_setpull(GPIO_TOUCH_SCL, S3C_GPIO_PULL_DOWN);
-	s3c_gpio_setpull(GPIO_TOUCH_SDA, S3C_GPIO_PULL_DOWN);
-}
-
-static int touchkey_suspend(void)
-{
-#ifdef LDO_WITH_REGULATOR
-	struct regulator *regulator;
-
-	regulator = regulator_get(NULL, TK_REGULATOR_NAME);
-	if (IS_ERR(regulator)) {
-		printk(KERN_ERR
-		"[Touchkey] touchkey_suspend : TK regulator_get failed\n");
-		return -EIO;
-	}
-
-	if (regulator_is_enabled(regulator))
-		regulator_disable(regulator);
-
-	regulator_put(regulator);
-#else
-	gpio_direction_output(GPIO_VTOUCH_LDO_EN, 0);
-#endif
-	s3c_gpio_setpull(GPIO_TOUCH_SCL, S3C_GPIO_PULL_DOWN);
-	s3c_gpio_setpull(GPIO_TOUCH_SDA, S3C_GPIO_PULL_DOWN);
-
-	return 1;
-}
-
-static int touchkey_resume(void)
-{
-#ifdef LDO_WITH_REGULATOR
-	struct regulator *regulator;
-
-	regulator = regulator_get(NULL, TK_REGULATOR_NAME);
-	if (IS_ERR(regulator)) {
-		printk(KERN_ERR
-		"[Touchkey] touchkey_resume : TK regulator_get failed\n");
-		return -EIO;
-	}
-
-	regulator_enable(regulator);
-	regulator_put(regulator);
-#else
-	gpio_direction_output(GPIO_VTOUCH_LDO_EN, 1);
-#endif
-	s3c_gpio_setpull(GPIO_TOUCH_SCL, S3C_GPIO_PULL_NONE);
-	s3c_gpio_setpull(GPIO_TOUCH_SDA, S3C_GPIO_PULL_NONE);
-
-	return 1;
-}
-
-static int touchkey_power_on(bool on)
-{
-	int ret;
-
-	if (on) {
-		gpio_direction_output(GPIO_TOUCH_INT, 1);
-		irq_set_irq_type(gpio_to_irq(GPIO_TOUCH_INT),
-			IRQF_TRIGGER_FALLING);
-		s3c_gpio_cfgpin(GPIO_TOUCH_INT, S3C_GPIO_SFN(0xf));
-		s3c_gpio_setpull(GPIO_TOUCH_INT, S3C_GPIO_PULL_UP);
-
-		ret = touchkey_resume();
-	} else {
-		gpio_direction_input(GPIO_TOUCH_INT);
-		s3c_gpio_setpull(GPIO_TOUCH_INT, S3C_GPIO_PULL_NONE);
-		ret = touchkey_suspend();
-	}
-
-	return ret;
-}
-
-static int touchkey_led_power_on(bool on)
-{
-#ifdef LED_LDO_WITH_REGULATOR
-	struct regulator *regulator;
-
-	regulator = regulator_get(NULL, TK_LED_REGULATOR_NAME);
-	if (IS_ERR(regulator)) {
-		printk(KERN_ERR
-		"[Touchkey] touchkey_led_power_on : TK_LED regulator_get failed\n");
-		return -EIO;
-	}
-
-	if (on) {
-		regulator_enable(regulator);
-	} else {
-		if (regulator_is_enabled(regulator))
-			regulator_disable(regulator);
-	}
-	regulator_put(regulator);
-#else
-	if (on)
-		gpio_direction_output(GPIO_3_TOUCH_EN, 1);
-	else
-		gpio_direction_output(GPIO_3_TOUCH_EN, 0);
-#endif
-	return 1;
-}
-
-static struct touchkey_platform_data touchkey_pdata = {
-	.gpio_sda = GPIO_TOUCH_SDA,
-	.gpio_scl = GPIO_TOUCH_SCL,
-	.gpio_int = GPIO_TOUCH_INT,
-	.init_platform_hw = touchkey_init_hw,
-	.suspend = touchkey_suspend,
-	.resume = touchkey_resume,
-	.power_on = touchkey_power_on,
-	.led_power_on = touchkey_led_power_on,
-};
-
-static struct i2c_gpio_platform_data gpio_i2c_data8 = {
-	.sda_pin = GPIO_TOUCH_SDA,
-	.scl_pin = GPIO_TOUCH_SCL,
-	.udelay = 1,
-};
-
-static struct i2c_board_info touchkey_i2c_info[] = {
-	{
-		I2C_BOARD_INFO("sec_touchkey", 0x20),
-		.platform_data = &touchkey_pdata,
-	},
-};
-
-struct platform_device s3c_device_i2c8 = {
-	.name = "i2c-gpio",
-	.id = 8,
-	.dev.platform_data = &gpio_i2c_data8,
-};
-#endif /*CONFIG_KEYBOARD_CYPRESS_TOUCH*/
 
 #ifdef CONFIG_KEYBOARD_TC300K
 #define GPIO_TOUCHKEY_INT EXYNOS5420_GPX0(0)
@@ -417,7 +280,7 @@ struct platform_device s3c_device_i2c8 = {
 #define TC300K_FW_NAME_R03 "coreriver/tc300k_chagall_r03.fw"
 
 #define TC300K_FW_VERSION_R00 0x5
-#define TC300K_FW_VERSION_R03 0x14
+#define TC300K_FW_VERSION_R03 0x1C
 
 static bool tc300k_power_enabled;
 static bool tc300k_keyled_enabled;
@@ -537,6 +400,7 @@ static struct tc300k_platform_data tc300k_touchkey_r00_pdata = {
 	.keyled = key_led_control,
 	.fw_name = TC300K_FW_NAME_R00,
 	.fw_version = TC300K_FW_VERSION_R00,
+	.sensing_ch_num = 4,
 };
 
 static struct tc300k_platform_data tc300k_touchkey_r03_pdata = {
@@ -550,6 +414,7 @@ static struct tc300k_platform_data tc300k_touchkey_r03_pdata = {
 	.keyled = key_led_control,
 	.fw_name = TC300K_FW_NAME_R03,
 	.fw_version = TC300K_FW_VERSION_R03,
+	.sensing_ch_num = 6,
 };
 
 static struct i2c_gpio_platform_data gpio_i2c_data9 = {
@@ -570,8 +435,6 @@ struct platform_device s3c_device_i2c9 = {
 	.id = 9,
 	.dev.platform_data = &gpio_i2c_data9,
 };
-
-extern unsigned int lcdtype;
 
 static void tc300k_touchkey_init(void)
 {
@@ -606,31 +469,26 @@ static void tc300k_touchkey_init(void)
 }
 #endif /* CONFIG_KEYBOARD_TC300K */
 
-#if defined(CONFIG_KEYBOARD_CYPRESS_TOUCH) || defined(CONFIG_KEYBOARD_TC300K)
+#if defined(CONFIG_KEYBOARD_TC300K)
 static void touchkey_init(void)
 {
-	printk(KERN_INFO"%s, system_rev : %d\n", __func__, system_rev);
+	printk(KERN_INFO "%s, system_rev : %d\n", __func__, system_rev);
 
 	if (lpcharge) {
-		printk(KERN_DEBUG "%s : lpcharge. touchkey driver unload\n", __func__);
+		printk(KERN_ERR "%s : lpcharge. touchkey driver unload\n", __func__);
 		return;
 	}
 
-	if (system_rev == 9) {
-#if defined(CONFIG_KEYBOARD_CYPRESS_TOUCH)
-		touchkey_init_hw();
-		i2c_register_board_info(8, touchkey_i2c_info,
-			ARRAY_SIZE(touchkey_i2c_info));
-#endif
-		;
-	} else {
-#if defined(CONFIG_KEYBOARD_TC300K)
-		tc300k_touchkey_init();
-		i2c_register_board_info(9, touchkey_i2c_data,
-			ARRAY_SIZE(touchkey_i2c_data));
-#endif
-		;
+	if (lcdtype == 0) {
+		printk(KERN_ERR "%s lcdtype 0. touchkey driver unload\n", __func__);
+		return;
 	}
+
+#if defined(CONFIG_KEYBOARD_TC300K)
+	tc300k_touchkey_init();
+	i2c_register_board_info(9, touchkey_i2c_data,
+		ARRAY_SIZE(touchkey_i2c_data));
+#endif
 }
 #endif
 
@@ -721,11 +579,11 @@ static const struct dvfs_freq touchkey_freq_table[BOOSTER_LEVEL_MAX] = {
 };
 
 static const struct dvfs_freq touch_freq_table[BOOSTER_LEVEL_MAX] = {
-	[BOOSTER_LEVEL1] = BOOSTER_DVFS_FREQ(1600000, 667000, 333000),
-	[BOOSTER_LEVEL2] = BOOSTER_DVFS_FREQ(650000, 400000, 111000),
-	[BOOSTER_LEVEL3] = BOOSTER_DVFS_FREQ(650000, 667000, 333000),
-	[BOOSTER_LEVEL9] = BOOSTER_DVFS_FREQ(1900000, 800000, 400000),
-	[BOOSTER_LEVEL9_CHG] = BOOSTER_DVFS_FREQ(1500000, 800000, 400000),
+	[BOOSTER_LEVEL1] = BOOSTER_DVFS_FREQ(1600000, 800000, 400000),
+	[BOOSTER_LEVEL2] = BOOSTER_DVFS_FREQ(650000, 400000, 222000),
+	[BOOSTER_LEVEL3] = BOOSTER_DVFS_FREQ(650000, 400000, 222000),
+	[BOOSTER_LEVEL5] = BOOSTER_DVFS_FREQ(800000, 800000, 400000),
+	[BOOSTER_LEVEL5_CHG] = BOOSTER_DVFS_FREQ(1400000, 800000, 400000),
 };
 
 static struct booster_key booster_keys[] = {
@@ -763,9 +621,6 @@ static struct platform_device input_booster = {
 static struct platform_device *input_devices[] __initdata = {
 	&s3c_device_i2c0,
 	&gpio_keys,
-#if defined(CONFIG_KEYBOARD_CYPRESS_TOUCH)
-	&s3c_device_i2c8,
-#endif
 #if defined(CONFIG_KEYBOARD_TC300K)
 	&s3c_device_i2c9,
 #endif
@@ -780,7 +635,7 @@ void __init exynos5_universal5420_input_init(void)
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_DSX
 	synaptics_dsx_tsp_init();
 #endif
-#if defined(CONFIG_KEYBOARD_CYPRESS_TOUCH) || defined(CONFIG_KEYBOARD_TC300K)
+#if defined(CONFIG_KEYBOARD_TC300K)
 	touchkey_init();
 #endif
 #ifdef CONFIG_SENSORS_HALL

@@ -41,7 +41,7 @@
 #include "i2s-regs.h"
 #include "../codecs/wm5102.h"
 
-#undef USE_BIAS_LEVEL_POST
+#define USE_BIAS_LEVEL_POST
 
 #define ADONISUNIV_DEFAULT_MCLK1	24000000
 #define ADONISUNIV_DEFAULT_MCLK2	32768
@@ -144,13 +144,17 @@ static int adonisuniv_start_sysclk(struct snd_soc_card *card)
 {
 	struct wm5102_machine_priv *priv = snd_soc_card_get_drvdata(card);
 	int ret;
+	int fs;
 
-	exynos5_audio_set_mclk(1, 0);
+	if (priv->aif1rate >= 192000)
+		fs = 256;
+	else
+		fs = 512;
 
 	ret = snd_soc_codec_set_pll(priv->codec, WM5102_FLL1,
 				     ARIZONA_CLK_SRC_MCLK1,
 				    ADONISUNIV_DEFAULT_MCLK1,
-				    priv->aif1rate * 512);
+				    priv->aif1rate * fs);
 	if (ret != 0) {
 		dev_err(priv->codec->dev, "Failed to start FLL1: %d\n", ret);
 		return ret;
@@ -164,9 +168,7 @@ static int adonisuniv_stop_sysclk(struct snd_soc_card *card)
 	struct wm5102_machine_priv *priv = snd_soc_card_get_drvdata(card);
 	int ret;
 
-	ret = snd_soc_codec_set_pll(priv->codec, WM5102_FLL1,
-				    ARIZONA_CLK_SRC_MCLK1,
-				    ADONISUNIV_DEFAULT_MCLK1, 0);
+	ret = snd_soc_codec_set_pll(priv->codec, WM5102_FLL1, 0, 0, 0);
 	if (ret != 0) {
 		dev_err(priv->codec->dev, "Failed to stop FLL1: %d\n", ret);
 		return ret;
@@ -179,8 +181,6 @@ static int adonisuniv_stop_sysclk(struct snd_soc_card *card)
 		return ret;
 	}
 
-	exynos5_audio_set_mclk(0, 0);
-
 	return ret;
 }
 
@@ -189,38 +189,49 @@ static int adonisuniv_set_bias_level(struct snd_soc_card *card,
 				     struct snd_soc_dapm_context *dapm,
 				     enum snd_soc_bias_level level)
 {
-	struct wm5102_machine_priv *priv = snd_soc_card_get_drvdata(card);
-	int ret = 0;
+	struct snd_soc_dai *codec_dai = card->rtd[0].codec_dai;
 
-	if (!priv->codec || dapm != &priv->codec->dapm)
+	if (dapm->dev != codec_dai->dev)
 		return 0;
 
-	dev_crit(priv->codec->dev, "SET BIAS %d\n", level);
+	dev_info(card->dev, "%s: %d\n", __func__, level);
 
 	switch (level) {
-	case SND_SOC_BIAS_STANDBY:
-		if (card->dapm.bias_level == SND_SOC_BIAS_OFF)
-			ret = adonisuniv_start_sysclk(card);
-		break;
-	case SND_SOC_BIAS_OFF:
-		ret = adonisuniv_stop_sysclk(card);
-
-		ret = snd_soc_codec_set_pll(priv->codec, WM5102_FLL2, 0, 0, 0);
-		if (ret != 0)
-			dev_err(priv->codec->dev,
-					"Failed to stop FLL2: %d\n", ret);
-		break;
 	case SND_SOC_BIAS_PREPARE:
-	case SND_SOC_BIAS_ON:
+		if (dapm->bias_level != SND_SOC_BIAS_STANDBY)
+		break;
+
+		adonisuniv_start_sysclk(card);
 		break;
 	default:
-		dev_err(priv->codec->dev, "UNKNOWN BIAS %d\n", level);
 		break;
 	}
 
-	card->dapm.bias_level = level;
+	return 0;
+}
 
-	return ret;
+static int adonisuniv_set_bias_level_post(struct snd_soc_card *card,
+				     struct snd_soc_dapm_context *dapm,
+				     enum snd_soc_bias_level level)
+{
+	struct snd_soc_dai *codec_dai = card->rtd[0].codec_dai;
+
+	if (dapm->dev != codec_dai->dev)
+		return 0;
+
+	dev_info(card->dev, "%s: %d\n", __func__, level);
+
+	switch (level) {
+	case SND_SOC_BIAS_STANDBY:
+		adonisuniv_stop_sysclk(card);
+		break;
+	default:
+		break;
+	}
+
+	dapm->bias_level = level;
+
+	return 0;
 }
 #endif
 
@@ -297,6 +308,18 @@ static void adonisuniv_gpio_init(void)
 	/*This is tempary code to enable for main mic.(force enable GPIO) */
 	gpio_set_value(GPIO_MICBIAS_EN, 0);
 #endif
+#ifdef GPIO_SUB_MICBIAS_EN
+	int ret;
+
+	/* Sub Microphone BIAS */
+	ret = gpio_request(GPIO_SUB_MICBIAS_EN, "SUBMIC_BIAS");
+	if (ret) {
+		pr_err(KERN_ERR "SUBMIC_BIAS_EN GPIO set error!\n");
+		return;
+	}
+	gpio_direction_output(GPIO_SUB_MICBIAS_EN, 1);
+	gpio_set_value(GPIO_SUB_MICBIAS_EN, 0);
+#endif
 }
 
 /*
@@ -323,6 +346,29 @@ static int adonisuniv_ext_mainmicbias(struct snd_soc_dapm_widget *w,
 	dev_dbg(codec->dev, "Main Mic BIAS: %d\n", event);
 #endif
 
+	return 0;
+}
+
+static int adonisuniv_ext_submicbias(struct snd_soc_dapm_widget *w,
+			struct snd_kcontrol *kcontrol,  int event)
+{
+#ifdef GPIO_SUB_MICBIAS_EN
+	struct snd_soc_card *card = w->dapm->card;
+	struct snd_soc_codec *codec = card->rtd[0].codec;
+
+	switch (event) {
+
+	case SND_SOC_DAPM_PRE_PMU:
+		gpio_set_value(GPIO_SUB_MICBIAS_EN,  1);
+		break;
+
+	case SND_SOC_DAPM_POST_PMD:
+		gpio_set_value(GPIO_SUB_MICBIAS_EN,  0);
+		break;
+	}
+
+	dev_dbg(codec->dev, "Sub Mic BIAS: %d\n", event);
+#endif
 	return 0;
 }
 
@@ -496,7 +542,7 @@ const struct snd_soc_dapm_widget adonisuniv_dapm_widgets[] = {
 
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
 	SND_SOC_DAPM_MIC("Main Mic", adonisuniv_ext_mainmicbias),
-	SND_SOC_DAPM_MIC("Sub Mic", NULL),
+	SND_SOC_DAPM_MIC("Sub Mic", adonisuniv_ext_submicbias),
 	SND_SOC_DAPM_MIC("3rd Mic", NULL),
 };
 
@@ -583,11 +629,22 @@ static int adonisuniv_wm5102_aif1_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
+static int adonisuniv_wm5102_aif1_hw_free(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_card *card = rtd->card;
+
+	dev_info(card->dev, "%s\n", __func__);
+
+	return 0;
+}
+
 /*
  * AdnoisUniv wm5102 DAI operations.
  */
 static struct snd_soc_ops adonisuniv_wm5102_aif1_ops = {
 	.hw_params = adonisuniv_wm5102_aif1_hw_params,
+	.hw_free = adonisuniv_wm5102_aif1_hw_free,
 };
 
 static int adonisuniv_wm5102_aif2_hw_params(struct snd_pcm_substream *substream,
@@ -920,6 +977,7 @@ static struct snd_soc_card adonisuniv = {
 
 #ifdef USE_BIAS_LEVEL_POST
 	.set_bias_level = adonisuniv_set_bias_level,
+	.set_bias_level_post = adonisuniv_set_bias_level_post,
 #endif
 };
 
@@ -967,6 +1025,9 @@ static int __devexit snd_adonisuniv_remove(struct platform_device *pdev)
 
 #ifdef GPIO_MICBIAS_EN
 	gpio_free(GPIO_MICBIAS_EN);
+#endif
+#ifdef GPIO_SUB_MICBIAS_EN
+	gpio_free(GPIO_SUB_MICBIAS_EN);
 #endif
 
 	return 0;

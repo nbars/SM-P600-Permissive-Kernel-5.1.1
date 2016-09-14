@@ -23,6 +23,7 @@
 #include <plat/gpio-cfg.h>
 #include <plat/regs-fb-v4.h>
 #include <plat/mipi_dsi.h>
+#include <plat/regs-mipidsim.h>
 #include <mach/map.h>
 #include <asm/system_info.h>
 
@@ -98,25 +99,27 @@ static int mipi_lcd_power_control(struct mipi_dsim_device *dsim,
 
 static int lcd_power_on(struct lcd_device *ld, int enable)
 {
-	struct regulator *regulator_1_8;
+	struct regulator *regulator_1_9;
 
 	pr_debug(" Chagall LCD %s  : enable = %d\n", __func__, enable);
 
-	regulator_1_8 = regulator_get(NULL, "vtcon_1.8v");
+	regulator_1_9 = regulator_get(NULL, "vtcon_1.9v");
 	if (enable) {
 		/* Power */
 		gpio_set_value(GPIO_LCD_EN, 1);
-		msleep(12);
+		usleep_range(10000, 12000);
 		if(system_rev >= 3)
-			regulator_enable(regulator_1_8);
-		msleep(20);
+			regulator_enable(regulator_1_9);
 	} else {
-		if (regulator_is_enabled(regulator_1_8))
-			regulator_disable(regulator_1_8);
-
+		if (regulator_is_enabled(regulator_1_9))
+			regulator_disable(regulator_1_9);
+		usleep_range(5000, 10000);
 		gpio_set_value(GPIO_LCD_EN, 0);
-		msleep(60);
+		usleep_range(15000,16000);
+		msleep(300); //for chagall
 	}
+	regulator_put(regulator_1_9);
+
 	return 0;
 }
 
@@ -126,15 +129,16 @@ static int lcd_reset(struct lcd_device *ld)
 
 	pr_debug(" Chagall %s\n", __func__);
 
-	msleep_interruptible(280);
+	msleep_interruptible(150);
 	do {
 		if (gpio_get_value(GPIO_TCON_RDY))
 			break;
-		msleep(50);
+		msleep(30);
 	} while (timeout--);
 	if (timeout < 0)
 		pr_err(" %s timeout...\n", __func__);
-
+	else
+		pr_info("%s duration: %d\n", __func__, 150+(10-timeout)*30);
 	return 0;
 }
 
@@ -248,7 +252,7 @@ static struct mipi_dsim_config dsim_info = {
 	.s = 0,
 
 	/* D-PHY PLL stable time spec :min = 200usec ~ max 400usec */
-	.pll_stable_time = 22200,
+	.pll_stable_time = DPHY_PLL_STABLE_TIME,
 
 	.esc_clk = 16 * MHZ, /* escape clk : 8MHz */
 
@@ -265,22 +269,10 @@ static struct s5p_platform_mipi_dsim dsim_platform_data = {
 	.dsim_config		= &dsim_info,
 	.dsim_lcd_config	= &dsim_lcd_info,
 
-	.mipi_power		= mipi_lcd_power_control,
-	.part_reset		= NULL,
+	.mipi_power		= NULL,
 	.init_d_phy		= s5p_dsim_init_d_phy,
 	.get_fb_frame_done	= NULL,
 	.trigger		= NULL,
-
-	/*
-	 * The stable time of needing to write data on SFR
-	 * when the mipi mode becomes LP mode.
-	 */
-	.delay_for_stabilization = 600,
-
-#if defined(CONFIG_FB_HW_TRIGGER)
-	.trigger_set = s3c_fb_enable_trigger_forcing,
-	.fimd1_device = &s5p_device_fimd1.dev,
-#endif
 };
 
 static const char * const keep_clock_arr[] = {

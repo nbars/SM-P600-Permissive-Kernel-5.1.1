@@ -48,6 +48,8 @@ extern int s5p_mipi_dsi_rd_data(struct mipi_dsim_device *dsim, u8 data_id,
 
 extern int s5p_mipi_dsi_enable_by_fimd(struct device *dsim_device);
 extern int s5p_mipi_dsi_disable_by_fimd(struct device *dsim_device);
+extern void s5p_dsim_frame_done_interrupt_enable(struct device *dsim);
+
 
 enum mipi_ddi_interface {
 	RGB_IF = 0x4000,

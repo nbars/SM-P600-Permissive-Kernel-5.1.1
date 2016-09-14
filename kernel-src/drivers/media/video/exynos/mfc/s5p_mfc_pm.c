@@ -237,14 +237,20 @@ int s5p_mfc_clock_on(void)
 	struct s5p_mfc_dev *dev = platform_get_drvdata(to_platform_device(pm->device));
 	unsigned long flags;
 
+	dev->pm.clock_on_steps = 1;
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
+	mutex_lock(&dev->curr_rate_lock);
 	s5p_mfc_clock_set_rate(dev, dev->curr_rate);
+	mutex_unlock(&dev->curr_rate_lock);
 #endif
+	dev->pm.clock_on_steps |= 0x1 << 1;
 	ret = clk_enable(pm->clock);
 	if (ret < 0)
 		return ret;
 
+	dev->pm.clock_on_steps |= 0x1 << 2;
 	if (!dev->curr_ctx_drm) {
+		dev->pm.clock_on_steps |= 0x1 << 3;
 		ret = s5p_mfc_mem_resume(dev->alloc_ctx[0]);
 		if (ret < 0) {
 			clk_disable(pm->clock);
@@ -256,6 +262,7 @@ int s5p_mfc_clock_on(void)
 		spin_lock_irqsave(&pm->clklock, flags);
 		if ((atomic_inc_return(&clk_ref) == 1) &&
 				FW_HAS_BUS_RESET(dev)) {
+			dev->pm.clock_on_steps |= 0x1 << 4;
 			val = s5p_mfc_read_reg(S5P_FIMV_MFC_BUS_RESET_CTRL);
 			val &= ~(0x1);
 			s5p_mfc_write_reg(val, S5P_FIMV_MFC_BUS_RESET_CTRL);
@@ -265,6 +272,7 @@ int s5p_mfc_clock_on(void)
 		atomic_inc_return(&clk_ref);
 	}
 
+	dev->pm.clock_on_steps |= 0x1 << 5;
 	state = atomic_read(&clk_ref);
 	mfc_debug(3, "+ %d", state);
 
@@ -281,7 +289,8 @@ void s5p_mfc_clock_off(void)
 		spin_lock_irqsave(&pm->clklock, flags);
 		if ((atomic_dec_return(&clk_ref) == 0) &&
 				(atomic_read(&dev->pm.power) == 1) &&
-				FW_HAS_BUS_RESET(dev)) {
+				FW_HAS_BUS_RESET(dev) &&
+				!dev->skip_bus_waiting) {
 			s5p_mfc_write_reg(0x1, S5P_FIMV_MFC_BUS_RESET_CTRL);
 
 			timeout = jiffies + msecs_to_jiffies(MFC_BW_TIMEOUT);

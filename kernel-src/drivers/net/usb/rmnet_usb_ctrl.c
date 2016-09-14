@@ -209,7 +209,7 @@ static void get_encap_work(struct work_struct *w)
 			__func__, status);
 		goto resubmit_int_urb;
 	} else
-		pr_info("[NRA:%d]>\n", iface_num);
+		pr_debug("[NRA:%d]>\n", iface_num);
 
 	return;
 
@@ -243,7 +243,7 @@ static void notification_available_cb(struct urb *urb)
 	case 0:
 	/*if non zero lenght of data received while unlink*/
 	case -ENOENT:
-		pr_info("[NACB:%d]<\n", iface_num);
+		pr_debug("[NACB:%d]<\n", iface_num);
 		/*success*/
 		break;
 
@@ -323,7 +323,7 @@ static void resp_avail_cb(struct urb *urb)
 
 	switch (urb->status) {
 	case 0:
-		pr_info("[RACB:%d]<\n", iface_num);
+		pr_debug("[RACB:%d]<\n", iface_num);
 		/*success*/
 		break;
 
@@ -404,7 +404,7 @@ resubmit_int_urb:
 				"%s: Error re-submitting Int URB %d\n",
 				__func__, status);
 		}
-		pr_info("[CHKRA:%d]>\n", iface_num);
+		pr_debug("[CHKRA:%d]>\n", iface_num);
 	}
 }
 
@@ -423,7 +423,7 @@ int rmnet_usb_ctrl_start_rx(struct rmnet_ctrl_dev *dev)
 			dev_err(dev->devicep,
 			"%s Intr submit %d\n", __func__, retval);
 	} else
-		pr_info("[CHKRA:%d]>\n", iface_num);
+		pr_debug("[CHKRA:%d]>\n", iface_num);
 
 	return retval;
 }
@@ -563,7 +563,12 @@ static int rmnet_usb_ctrl_write(struct rmnet_ctrl_dev *dev,
 		return result;
 	}
 
-	return size;
+	if (usb_wait_anchor_empty_timeout(&dev->tx_submitted, 1000) > 0)
+		return size;
+	else {
+		usb_kill_anchored_urbs(&dev->tx_submitted);
+		return -EAGAIN;
+	}
 }
 
 static int rmnet_ctl_open(struct inode *inode, struct file *file)
@@ -659,7 +664,7 @@ static unsigned int rmnet_ctl_poll(struct file *file, poll_table *wait)
 
 	poll_wait(file, &dev->read_wait_queue, wait);
 	if (!test_bit(RMNET_CTRL_DEV_READY, &dev->status)) {
-		dev_dbg(dev->devicep, "%s: Device not connected\n",
+		dev_err(dev->devicep, "%s: Device not connected\n",
 			__func__);
 		return POLLERR;
 	}
@@ -688,7 +693,7 @@ static ssize_t rmnet_ctl_read(struct file *file, char __user *buf, size_t count,
 
 ctrl_read:
 	if (!test_bit(RMNET_CTRL_DEV_READY, &dev->status)) {
-		dev_dbg(dev->devicep, "%s: Device not connected\n",
+		dev_err(dev->devicep, "%s: Device not connected\n",
 			__func__);
 		return -ENETRESET;
 	}
@@ -748,10 +753,11 @@ static ssize_t rmnet_ctl_write(struct file *file, const char __user * buf,
 	struct ctrl_pkt		*cpkt;
 	struct rmnet_ctrl_dev	*dev = file->private_data;
 
+rewrite:
 	if (!dev)
 		return -ENODEV;
 
-	if (size <= 0)
+	if (!size)
 		return -EINVAL;
 
 	if (!test_bit(RMNET_CTRL_DEV_READY, &dev->status))
@@ -796,6 +802,10 @@ static ssize_t rmnet_ctl_write(struct file *file, const char __user * buf,
 	status = rmnet_usb_ctrl_write(dev, cpkt, size);
 	if (status == size)
 		return size;
+	else if (status == -EAGAIN) {
+		dev_err(dev->devicep, "%s: rewrite\n", __func__);
+		goto rewrite;
+	}
 
 	return status;
 }

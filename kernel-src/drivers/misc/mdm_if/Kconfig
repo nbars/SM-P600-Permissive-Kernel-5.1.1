@@ -40,11 +40,13 @@ config QC_MODEM_M3
 	select DIAG_CHAR
 	select MDM_HSIC_PM
 	select USB_QCOM_KS_BRIDGE
+	select USB_SERIAL_CSVT
 #	select USB_SERIAL_QUALCOMM
+
+endchoice
 
 config EHCI_MODEM_PORTNUM
 	int "EHCI port number of modem connection"
 	default 2
 
-endchoice
 endif

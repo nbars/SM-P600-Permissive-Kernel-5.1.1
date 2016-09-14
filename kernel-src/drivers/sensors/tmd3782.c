@@ -26,6 +26,7 @@
 #include <linux/interrupt.h>
 #include <linux/wakelock.h>
 #include <linux/regulator/consumer.h>
+#include <linux/tmd3782_platformdata.h>
 #include "sensors_core.h"
 
 #define VENDOR_NAME			"AMS"
@@ -107,32 +108,21 @@
 #define STA_ADCINTR			0x10
 #define STA_PRXINTR			0x20
 
-#define Atime_ms			504 /* 50.4ms */
-#define DGF				475
-#define R_Coef1				535
-#define G_Coef1				1000
-#define B_Coef1				795
-#define CT_Coef1			2855
-#define CT_Offset1			1973
-#define INTEGRATION_CYCLE		240
-
 #define PROX_AVG_COUNT			40
-#define MAX_LUX				39768
+#define MAX_LUX				150000
 
 #define PROX_MAX			1023
 #define PROX_MIN			0
-#define PROX_OFFSET_ARRAY_LENGTH	10
 
-#define ALS_TIME_SET			0xED
+#define ALS_TIME_SET			0xEB
 #define WAIT_TIME_SET			0xFF
-#define INTER_FILTER_SET		0x33
+#define INTER_FILTER_SET		0x23
 #define PRX_CFG_SET			0x00
-#define PRX_PULSE_COUNT_SET		0x0C
-#define ALS_GAIN_SET			0x28
-#define PROX_THD_HIGH_DEFAULT		750
-#define PROX_THD_LOW_DEFAULT		580
+#define PRX_PULSE_COUNT_SET		0x08
+#define ALS_GAIN_SET			0x22
 
 #define LIGHT_LOG_TIME			15 /* 15 sec */
+#define LIGHT_SENSOR_DEFAULT_DELAY	200000000LL
 
 enum {
 	LIGHT_ENABLED = BIT(0),
@@ -144,7 +134,10 @@ enum {
 	STATE_FAR = 1,
 };
 
-#define TMD3782_LIGHT_DEFAULT_DELAY	200000000LL
+enum {
+	OFF = 0,
+	ON = 1,
+};
 
 struct tmd3782_p {
 	struct i2c_client *i2c_client;
@@ -163,21 +156,32 @@ struct tmd3782_p {
 	u16 reddata;
 	u16 grndata;
 	u16 bludata;
-	s32 irdata;
+	int lux;
+	int irdata;
+	int atime_ms;
+	int dgf;
+	int coef_b;
+	int coef_c;
+	int coef_d;
+	int ct_coef;
+	int ct_offset;
+	int integration_cycle;
 	int time_count;
 	int prox_irq;
 	int prox_irq_gpio;
 	int prox_avg[3];
 	int prox_avg_enable;
-	u16 prox_thd_high;
-	u16 prox_thd_low;
-	u16 prox_offset;
+	int prox_thd_high;
+	int prox_thd_low;
+	int prox_offset;
 	int prox_state;
 	int prox_cal_result;
+	int prox_default_thd_high;
+	int prox_default_thd_low;
+	int prox_rawdata_trim;
 };
 
-static int tmd3782_i2c_read(struct tmd3782_p *data,
-		unsigned char reg_addr,  unsigned char *buf)
+static int tmd3782_i2c_read(struct tmd3782_p *data, u8 reg_addr,  u8 *buf)
 {
 	int ret;
 	struct i2c_msg msg[2];
@@ -202,12 +206,11 @@ static int tmd3782_i2c_read(struct tmd3782_p *data,
 	return 0;
 }
 
-static int tmd3782_i2c_read_word(struct tmd3782_p *data,
-		unsigned char reg_addr, u16 *buf)
+static int tmd3782_i2c_read_word(struct tmd3782_p *data, u8 reg_addr, u16 *buf)
 {
 	int ret;
 	struct i2c_msg msg[2];
-	unsigned char r_buf[2];
+	u8 r_buf[2];
 
 	msg[0].addr = data->i2c_client->addr;
 	msg[0].flags = I2C_M_WR;
@@ -232,12 +235,11 @@ static int tmd3782_i2c_read_word(struct tmd3782_p *data,
 	return 0;
 }
 
-static int tmd3782_i2c_write(struct tmd3782_p *data,
-		unsigned char reg_addr, unsigned char buf)
+static int tmd3782_i2c_write(struct tmd3782_p *data, u8 reg_addr, u8 buf)
 {
 	int ret = 0;
 	struct i2c_msg msg;
-	unsigned char w_buf[2];
+	u8 w_buf[2];
 
 	w_buf[0] = reg_addr;
 	w_buf[1] = buf;
@@ -257,7 +259,7 @@ static int tmd3782_i2c_write(struct tmd3782_p *data,
 	return 0;
 }
 
-static int tmd3782_i2c_write_cmd(struct tmd3782_p *data, unsigned char cmd)
+static int tmd3782_i2c_write_cmd(struct tmd3782_p *data, u8 cmd)
 {
 	int ret = 0;
 	struct i2c_msg msg;
@@ -277,95 +279,40 @@ static int tmd3782_i2c_write_cmd(struct tmd3782_p *data, unsigned char cmd)
 	return 0;
 }
 
-static int tmd3782_chip_on(struct tmd3782_p *data)
+static int tmd3782_chip_enable(struct tmd3782_p *data, int enable)
 {
-	int i = 0, ret = 0;
-	u8 prox_thd_buf[4];
-
-	ret = tmd3782_i2c_write(data, CMD_REG | CNTRL, CNTL_PWRON);
-	if (ret < 0)
-		goto exit_i2c_fail;
-
-	ret = tmd3782_i2c_write(data, CMD_REG | ALS_TIME, ALS_TIME_SET);
-	if (ret < 0)
-		goto exit_i2c_fail;
-
-	ret = tmd3782_i2c_write(data, CMD_REG | WAIT_TIME, WAIT_TIME_SET);
-	if (ret < 0)
-		goto exit_i2c_fail;
-
-	ret = tmd3782_i2c_write(data, CMD_REG | INTERRUPT, INTER_FILTER_SET);
-	if (ret < 0)
-		goto exit_i2c_fail;
-
-	ret = tmd3782_i2c_write(data, CMD_REG |PRX_CFG, PRX_CFG_SET);
-	if (ret < 0)
-		goto exit_i2c_fail;
-
-	ret = tmd3782_i2c_write(data, CMD_REG | PRX_COUNT,
-			PRX_PULSE_COUNT_SET);
-	if (ret < 0)
-		goto exit_i2c_fail;
-
-	ret = tmd3782_i2c_write(data, CMD_REG | GAIN, ALS_GAIN_SET);
-	if (ret < 0)
-		goto exit_i2c_fail;
-
-	/* Setting for proximity interrupt */
-	prox_thd_buf[0] = 0;
-	prox_thd_buf[1] = 0;
-	prox_thd_buf[2] = data->prox_thd_high & 0xff;
-	prox_thd_buf[3] = (data->prox_thd_high >> 8) & 0xff;
-
-	for (i = 0; i < 4; i++) {
-		ret = tmd3782_i2c_write(data, CMD_REG | (PRX_MINTHRESHLO + i),
-				prox_thd_buf[i]);
-		if (ret < 0)
-			goto exit_i2c_fail;
-	}
-
-	ret = tmd3782_i2c_write(data, CMD_REG | CNTRL, CNTL_INTPROXPON_ENBL);
-	if (ret < 0)
-		goto exit_i2c_fail;
-
-	msleep(60); /*more than 58 ms*/
-	goto exit;
-
-exit_i2c_fail:
-	pr_err("[SENSOR]: %s - fail! %d\n", __func__, ret);
-exit:
-	return ret;
-}
-
-static int tmd3782_chip_off(struct tmd3782_p *data)
-{
+	u8 buf;
 	int ret;
 
-	ret = tmd3782_i2c_write(data, CMD_REG | CNTRL, CNTL_REG_CLEAR);
+	if (enable == ON)
+		buf = CNTL_INTPROXPON_ENBL;
+	else
+		buf = CNTL_REG_CLEAR;
+
+	ret = tmd3782_i2c_write(data, CMD_REG | CNTRL, buf);
 	if (ret < 0)
 		pr_err("[SENSOR]: %s - fail! %d\n", __func__, ret);
 
 	return ret;
 }
 
-
 static int tmd3782_light_get_cct(struct tmd3782_p *data)
 {
-	s32 bp1 = (s32)data->bludata - data->irdata;
-	s32 rp1 = (s32)data->reddata - data->irdata;
+	int bp1 = (int)data->bludata - data->irdata;
+	int rp1 = (int)data->reddata - data->irdata;
 	int cct = 0;
 
-	if(rp1 != 0)
-		cct = (int)(CT_Coef1 * bp1 / rp1 + CT_Offset1);
+	if (rp1 != 0)
+		cct = data->ct_coef * bp1 / rp1 + data->ct_offset;
 
 	return cct;
 }
 
 static int tmd3782_light_get_lux(struct tmd3782_p *data)
 {
-	s32 rp1, gp1, bp1, cp1;
-	s32 lux = 0;
 	u16 gain_reg = 0x0;
+	int rp1, gp1, bp1;
+	int lux = 0;
 	int gain = 1;
 	int ret = 0;
 
@@ -381,57 +328,63 @@ static int tmd3782_light_get_lux(struct tmd3782_p *data)
 	tmd3782_i2c_read_word(data, CMD_REG | BLU_CHAN1LO, &data->bludata);
 
 	switch (gain_reg & 0x03) {
-		case 0x00:
-			gain = 1;
-			break;
-		case 0x01:
-			gain = 4;
-			break;
-		case 0x02:
-			gain = 16;
-			break;
+	case 0x00:
+		gain = 1;
+		break;
+	case 0x01:
+		gain = 4;
+		break;
+	case 0x02:
+		gain = 16;
+		break;
 #if 0
-		case 0x03:
-			gain = 64;
-			break;
+	case 0x03:
+		gain = 64;
+		break;
 #endif
-		default:
-			break;
+	default:
+		break;
 	}
 
-	if (data->clrdata >= 18500) {
+	if (gain == 1 && data->clrdata < 25) {
+		tmd3782_i2c_write(data, CMD_REG | GAIN, 0x22);
+		return data->lux;
+	} else if (gain == 16 && data->clrdata > 15000) {
+		tmd3782_i2c_write(data, CMD_REG | GAIN, 0x20);
+		return data->lux;
+	}
+
+	if ((data->clrdata >= 18500) && (gain == 1)) {
 		lux = MAX_LUX;
 		return lux;
 	}
 
-	if (gain ==4 && data->clrdata < 100)
-		tmd3782_i2c_write(data, CMD_REG | GAIN, 0x22);
-	else if(gain == 16 && data->clrdata > 15000)
-		tmd3782_i2c_write(data, CMD_REG | GAIN, 0x21);
-
 	/* calculate lux */
-	data->irdata = ((s32)data->reddata + (s32)data->grndata\
-			+ (s32)data->bludata - (s32)data->clrdata) / 2;
+	data->irdata = ((int)data->reddata + (int)data->grndata \
+			+ (int)data->bludata - (int)data->clrdata) / 2;
 
 	/* remove ir from counts */
-	rp1 = (s32)data->reddata - data->irdata;
-	gp1 = (s32)data->grndata - data->irdata;
-	bp1 = (s32)data->bludata - data->irdata;
-	cp1 = (s32)data->clrdata - data->irdata;
+	rp1 = (int)data->reddata - data->irdata;
+	gp1 = (int)data->grndata - data->irdata;
+	bp1 = (int)data->bludata - data->irdata;
 
-	lux = (rp1 * R_Coef1 + gp1 * G_Coef1 + bp1 * B_Coef1) / 1000;
+	lux = rp1 * data->coef_b + gp1 * data->coef_c + bp1 * data->coef_d;
+	lux /= 1000;
 
-	if(lux < 0) {
+	if (lux < 0) {
 		lux = 0;
 	} else {
-		/* divide by CPL, CPL = (Atime_ms * ALS_GAIN / DGF) */
-		lux = lux * DGF;
-		lux *= 10; /* Atime_ms */
-		lux /= Atime_ms;
+		/* divide by CPL, CPL = (ATIME_MS * ALS_GAIN / DGF) */
+		lux = lux * data->dgf;
+		/* ATIME_MS */
+		lux *= 10;
+		lux /= data->atime_ms;
+		/* Again */
 		lux /= gain;
 	}
 
-	return (int)lux;
+	data->lux = lux;
+	return lux;
 }
 
 static void tmd3782_light_light_enable(struct tmd3782_p *data)
@@ -461,7 +414,7 @@ static void tmd3782_light_work_func(struct work_struct *work)
 	if (((int64_t)atomic_read(&data->light_poll_delay)\
 		* (int64_t)data->time_count)
 		>= ((int64_t)LIGHT_LOG_TIME * NSEC_PER_SEC)) {
-		pr_info("[SENSOR]: %s - r = %u g = %u b = %u c = %u,"
+		pr_info("[SENSOR]: %s - r = %u g = %u b = %u c = %u,"\
 			" lux = %d, cct = %d\n", __func__,
 			data->reddata, data->grndata,
 			data->bludata, data->clrdata, lux, cct);
@@ -518,15 +471,15 @@ static ssize_t tmd3782_light_enable_store(struct device *dev,
 	mutex_lock(&data->power_lock);
 	pr_info("[SENSOR]: %s - new_value = %u\n", __func__, enable);
 	if (enable && !(data->power_state & LIGHT_ENABLED)) {
-		if (data->power_state == 0)
-			tmd3782_chip_on(data);
+		if (data->power_state == OFF)
+			tmd3782_chip_enable(data, ON);
 		data->power_state |= LIGHT_ENABLED;
 		tmd3782_light_light_enable(data);
 	} else if (!enable && (data->power_state & LIGHT_ENABLED)) {
 		tmd3782_light_light_disable(data);
 		data->power_state &= ~LIGHT_ENABLED;
-		if (data->power_state == 0)
-			tmd3782_chip_off(data);
+		if (data->power_state == OFF)
+			tmd3782_chip_enable(data, OFF);
 	}
 	mutex_unlock(&data->power_lock);
 	return size;
@@ -642,7 +595,7 @@ static int tmd3782_light_input_init(struct tmd3782_p *data)
 	return 0;
 }
 
-static int tmd3782_prox_led_onoff(struct tmd3782_p *data, bool onoff)
+static int tmd3782_prox_led_onoff(struct tmd3782_p *data, int onoff)
 {
 	struct regulator *leda;
 
@@ -652,7 +605,7 @@ static int tmd3782_prox_led_onoff(struct tmd3782_p *data, bool onoff)
 		return -ENOMEM;
 	}
 
-	if (onoff)
+	if (onoff == ON)
 		regulator_enable(leda);
 	else
 		regulator_disable(leda);
@@ -662,48 +615,86 @@ static int tmd3782_prox_led_onoff(struct tmd3782_p *data, bool onoff)
 	return 0;
 }
 
+static int tmd3782_prox_get_adc(struct tmd3782_p *data)
+{
+	u16 adc;
+
+	tmd3782_i2c_read_word(data, CMD_REG | PRX_LO, &adc);
+	if (adc < data->prox_rawdata_trim)
+		return PROX_MIN;
+	else if (adc > PROX_MAX)
+		adc = PROX_MAX;
+
+	return (int)adc - data->prox_rawdata_trim;
+}
+
+static int tmd3782_prox_set_threshold(struct tmd3782_p *data)
+{
+	int i = 0, ret = 0;
+	u8 thd_buf[4];
+	u16 trim = (u16)data->prox_rawdata_trim;
+
+	if (data->prox_state == STATE_CLOSE) {
+		thd_buf[0] = ((u16)data->prox_thd_low + trim) & 0xFF;
+		thd_buf[1] = (((u16)data->prox_thd_low + trim) >> 8) & 0xFF;
+		thd_buf[2] = (0xFFFF) & 0xFF;
+		thd_buf[3] = (0xFFFF >> 8) & 0xFF;
+	} else {
+		thd_buf[0] = (0x0000) & 0xFF;
+		thd_buf[1] = (0x0000 >> 8) & 0xFF;
+		thd_buf[2] = ((u16)data->prox_thd_high + trim) & 0xFF;
+		thd_buf[3] = (((u16)data->prox_thd_high + trim) >> 8) & 0xFF;
+	}
+
+	for (i = 0; i < 4; i++) {
+		ret = tmd3782_i2c_write(data, CMD_REG | (PRX_MINTHRESHLO + i),
+				thd_buf[i]);
+		if (ret < 0)
+			goto exit;
+	}
+
+exit:
+	return ret;
+}
+
+static int tmd3782_prox_get_threshold(struct tmd3782_p *data, u8 buf)
+{
+	u16 threshold;
+
+	tmd3782_i2c_read_word(data, CMD_REG | buf, &threshold);
+	if ((threshold == 0xFFFF) || (threshold == 0))
+		return (int)threshold;
+
+	return (int)threshold - data->prox_rawdata_trim;
+}
+
 static void tmd3782_prox_work_func(struct work_struct *work)
 {
 	struct tmd3782_p *data = container_of((struct delayed_work *)work,
 			struct tmd3782_p, prox_work);
-	u8 prox_thd_buf[4];
-	u16 adc, thd_high, thd_low;
-	int i, state = STATE_FAR;
+	int thd_high, thd_low, adc;
 
-	tmd3782_i2c_read_word(data, CMD_REG | PRX_LO, &adc);
-	tmd3782_i2c_read_word(data, CMD_REG | PRX_MAXTHRESHLO, &thd_high);
-	tmd3782_i2c_read_word(data, CMD_REG | PRX_MINTHRESHLO, &thd_low);
-	pr_info("[SENSOR]: %s - hi = %u, low = %u, adc = %u\n",
-		__func__, data->prox_thd_high, data->prox_thd_low, adc);
+	adc = tmd3782_prox_get_adc(data);
+	thd_high = tmd3782_prox_get_threshold(data, PRX_MAXTHRESHLO);
+	thd_low = tmd3782_prox_get_threshold(data, PRX_MINTHRESHLO);
+	pr_info("[SENSOR]: %s - hi = %d, low = %d, adc = %d\n", __func__,
+		data->prox_thd_high, data->prox_thd_low, adc);
 
-	if ((thd_high == data->prox_thd_high)
-			&& (adc >= data->prox_thd_high)) {
-		state = STATE_CLOSE;
-		prox_thd_buf[0] = (data->prox_thd_low) & 0xFF;
-		prox_thd_buf[1] = (data->prox_thd_low >> 8) & 0xFF;
-		prox_thd_buf[2] = (0xFFFF) & 0xFF;
-		prox_thd_buf[3] = (0xFFFF >> 8) & 0xFF;
-	} else if ((thd_high == 0xFFFF) && (adc <= data->prox_thd_low)) {
-		state = STATE_FAR;
-		prox_thd_buf[0] = (0x0000) & 0xFF;
-		prox_thd_buf[1] = (0x0000 >> 8) & 0xFF;
-		prox_thd_buf[2] = (data->prox_thd_high) & 0xFF;
-		prox_thd_buf[3] = (data->prox_thd_high >> 8) & 0xFF;
+	if ((thd_high == data->prox_thd_high) && (adc >= data->prox_thd_high)) {
+		data->prox_state = STATE_CLOSE;
+	} else if ((thd_low == data->prox_thd_low)
+			&& (adc <= data->prox_thd_low)) {
+		data->prox_state = STATE_FAR;
 	} else {
-		pr_err("[SENSOR]: %s - Error Case! [adc= %u, th_high = %u,"
-			"th_min = %u]\n", __func__, adc, thd_high, thd_low);
+		pr_err("[SENSOR]: %s - Error Case! [adc= %d, th_high = %d,"\
+			"th_min = %d]\n", __func__, adc, thd_high, thd_low);
 		goto exit;
 	}
 
-	for (i = 0; i < 4; i++)
-		tmd3782_i2c_write(data, CMD_REG | (PRX_MINTHRESHLO + i),
-			prox_thd_buf[i]);
-
-	input_report_abs(data->prox_input, EVENT_TYPE_PROX, state);
+	tmd3782_prox_set_threshold(data);
+	input_report_abs(data->prox_input, EVENT_TYPE_PROX, data->prox_state);
 	input_sync(data->prox_input);
-	pr_info("[SENSOR]: %s - value = %d\n", __func__, state);
-
-	data->prox_state = state;
+	pr_info("[SENSOR]: %s - value = %d\n", __func__, data->prox_state);
 
 exit:
 	/* reset Interrupt pin */
@@ -726,20 +717,16 @@ static void tmd3782_prox_avg_work_func(struct work_struct *work)
 {
 	struct tmd3782_p *data = container_of((struct delayed_work *)work,
 			struct tmd3782_p, prox_avg_work);
-	u16 adc = 0;
-	int min = 0xffff, max = 0, avg = 0;
+	int min = 0xffff, max = 0, avg = 0, adc;
 	int i = 0;
 
 	for (i = 0; i < PROX_AVG_COUNT; i++) {
-		tmd3782_i2c_read_word(data, CMD_REG | PRX_LO, &adc);
-		if (adc > PROX_MAX)
-			adc = PROX_MAX;
-
-		avg += adc;
+		adc = tmd3782_prox_get_adc(data);
 		if (adc < min)
 			min = adc;
 		if (adc > max)
 			max = adc;
+		avg += adc;
 		msleep(40);
 	}
 
@@ -771,102 +758,52 @@ static int tmd3782_prox_open_offset(struct tmd3782_p *data)
 	}
 
 	ret = offset_filp->f_op->read(offset_filp,
-		(char *)&data->prox_offset, sizeof(u16), &offset_filp->f_pos);
-	if (ret != sizeof(u16)) {
+		(char *)&data->prox_offset, sizeof(int), &offset_filp->f_pos);
+	if (ret != sizeof(int)) {
 		pr_err("[SENSOR]: %s - Can't read the offset data from file\n",
 			__func__);
 		ret = -EIO;
 	}
 
-	pr_info("[SENSOR]: %s - offset = %u\n", __func__, data->prox_offset);
+	pr_info("[SENSOR]: %s - offset = %d\n", __func__, data->prox_offset);
 	filp_close(offset_filp, current->files);
 	set_fs(old_fs);
 	return ret;
-}
-
-static int tmd3782_prox_adc(struct tmd3782_p *data)
-{
-	u16 adc;
-	int i = 0;
-	int avg = 0;
-	int min = 0xffff;
-	int max = 0;
-	int total = 0;
-
-	for (i = 0; i < PROX_OFFSET_ARRAY_LENGTH; i++) {
-		usleep_range(11000, 11000);
-		tmd3782_i2c_read_word(data, CMD_REG | PRX_LO, &adc);
-		if (adc < min)
-			min = adc;
-		else if (adc > max)
-			max = adc;
-
-		total += adc;
-	}
-
-	total -= (min + max);
-	avg = (int)(total / (PROX_OFFSET_ARRAY_LENGTH - 2));
-
-	return avg;
-}
-
-static void tmd3782_prox_thd_set(struct tmd3782_p *data)
-{
-	int i;
-	u8 prox_thd_buf[4] = {0,};
-
-	/* Setting for proximity interrupt */
-	if (data->prox_state == STATE_CLOSE) {
-		prox_thd_buf[0] = (data->prox_thd_low) & 0xFF;
-		prox_thd_buf[1] = (data->prox_thd_low >> 8) & 0xFF;
-		prox_thd_buf[2] = (0xFFFF) & 0xFF;
-		prox_thd_buf[3] = (0xFFFF >> 8) & 0xFF;
-	} else if (data->prox_state == STATE_FAR) {
-		prox_thd_buf[0] = (0x0000) & 0xFF;
-		prox_thd_buf[1] = (0x0000 >> 8) & 0xFF;
-		prox_thd_buf[2] = (data->prox_thd_high) & 0xff;
-		prox_thd_buf[3] = (data->prox_thd_high >> 8) & 0xff;
-	}
-
-	for (i = 0; i < 4; i++)
-		tmd3782_i2c_write(data, CMD_REG | (PRX_MINTHRESHLO + i),
-				prox_thd_buf[i]);
 }
 
 static int tmd3782_prox_store_offset(struct tmd3782_p *data, bool do_calib)
 {
 	struct file *offset_filp = NULL;
 	mm_segment_t old_fs;
-	int ret = 0;
-	u16 max_ct = PROX_THD_LOW_DEFAULT / 2;
-	u16 abnormal_ct = tmd3782_prox_adc(data);
-	u16 offset = 0;
+	int ret = 0, offset = 0;
+	int abnormal_ct = tmd3782_prox_get_adc(data);
+	int max_ct = data->prox_default_thd_low / 2;
 
-	if(do_calib) {
+	if (do_calib) {
 		pr_info("[SENSOR]: %s - calibration start\n", __func__);
-		if(abnormal_ct > 500) {
+		if (abnormal_ct > 500) {
 			pr_err("[SENSOR]: %s - crosstalk is lager than 500\n",
 				__func__);
 		}
 
-		if(abnormal_ct > max_ct) {
+		if (abnormal_ct > max_ct) {
 			offset = abnormal_ct - max_ct;
-			if ((PROX_THD_HIGH_DEFAULT + offset) > 900)
-				pr_err("[SENSOR]: %s - Threshold is lager"
+			if ((data->prox_default_thd_high + offset) > 900)
+				pr_err("[SENSOR]: %s - Threshold is lager "\
 						"than 900\n", __func__);
 		}
 
 		data->prox_offset = offset;
-		data->prox_thd_high = PROX_THD_HIGH_DEFAULT + offset;
-		data->prox_thd_low = PROX_THD_LOW_DEFAULT + offset;
+		data->prox_thd_high = data->prox_default_thd_high + offset;
+		data->prox_thd_low = data->prox_default_thd_low + offset;
 
-		tmd3782_prox_thd_set(data);
+		tmd3782_prox_set_threshold(data);
 		data->prox_cal_result = 1;
 	} else {
 		pr_info("[SENSOR]: %s - clear\n", __func__);
-		data->prox_thd_high = PROX_THD_HIGH_DEFAULT;
-		data->prox_thd_low = PROX_THD_LOW_DEFAULT;
-		tmd3782_prox_thd_set(data);
+		data->prox_thd_high = data->prox_default_thd_high;
+		data->prox_thd_low = data->prox_default_thd_low;
+		tmd3782_prox_set_threshold(data);
 		data->prox_offset = 0;
 		data->prox_cal_result = 2;
 	}
@@ -886,8 +823,8 @@ static int tmd3782_prox_store_offset(struct tmd3782_p *data, bool do_calib)
 	}
 
 	ret = offset_filp->f_op->write(offset_filp,
-		(char *)&data->prox_offset, sizeof(u16), &offset_filp->f_pos);
-	if (ret != sizeof(u16)) {
+		(char *)&data->prox_offset, sizeof(int), &offset_filp->f_pos);
+	if (ret != sizeof(int)) {
 		pr_err("[SENSOR]: %s - Can't write the offset to file\n",
 			__func__);
 		ret = -EIO;
@@ -947,22 +884,22 @@ static ssize_t tmd3782_prox_offset_pass_show(struct device *dev,
 static ssize_t tmd3782_prox_avg_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-
 	struct tmd3782_p *data = dev_get_drvdata(dev);
-	return sprintf(buf, "%d,%d,%d\n", data->prox_avg[0],
-			data->prox_avg[1], data->prox_avg[2]);
+
+	return sprintf(buf, "%d,%d,%d\n",
+		data->prox_avg[0], data->prox_avg[1], data->prox_avg[2]);
 }
 
 static ssize_t tmd3782_prox_avg_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct tmd3782_p *data = dev_get_drvdata(dev);
-	int new_value = 0;
+	int new_value = OFF;
 
 	if (sysfs_streq(buf, "1")) {
-		new_value = 1;
+		new_value = ON;
 	} else if (sysfs_streq(buf, "0")) {
-		new_value = 0;
+		new_value = OFF;
 	} else {
 		pr_err("[SENSOR]: %s - invalid value %d\n", __func__, *buf);
 		return -EINVAL;
@@ -970,36 +907,36 @@ static ssize_t tmd3782_prox_avg_store(struct device *dev,
 
 	if (data->prox_avg_enable == new_value) {
 		pr_err("[SENSOR]: %s - same state\n", __func__);
-	} else if (new_value == 1) {
+	} else if (new_value == ON) {
 		pr_info("[SENSOR]: %s - start to get avg\n", __func__);
 		schedule_delayed_work(&data->prox_avg_work,
 				msecs_to_jiffies(2000));
-		data->prox_avg_enable = 1;
+		data->prox_avg_enable = ON;
 	} else {
 		pr_info("[SENSOR]: %s - stop to get avg\n", __func__);
 		cancel_delayed_work_sync(&data->prox_avg_work);
-		data->prox_avg_enable = 0;
+		data->prox_avg_enable = OFF;
 	}
 
 	return size;
 }
 
-static ssize_t tmd3782_prox_thd_high_show(struct device *dev,
+static ssize_t tmd3782_prox_high_threshold_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	struct tmd3782_p *data = dev_get_drvdata(dev);
-	u16 thresh_hi = 0,thresh_low = 0;
+	int thresh_hi = 0, thresh_low = 0;
 
-	tmd3782_i2c_read_word(data, CMD_REG | PRX_MINTHRESHLO, &thresh_low);
-	tmd3782_i2c_read_word(data, CMD_REG | PRX_MAXTHRESHLO, &thresh_hi);
+	thresh_hi = tmd3782_prox_get_threshold(data, PRX_MAXTHRESHLO);
+	thresh_low = tmd3782_prox_get_threshold(data, PRX_MINTHRESHLO);
 
 	pr_info("[SENSOR]: %s - thresh_hi = %d, thresh_low = %d\n",
 		__func__, thresh_hi, thresh_low);
 
-	return sprintf(buf, "%u,%u\n", thresh_hi,thresh_low);
+	return sprintf(buf, "%d,%d\n", thresh_hi, thresh_low);
 }
 
-static ssize_t tmd3782_prox_thd_high_store(struct device *dev,
+static ssize_t tmd3782_prox_high_threshold_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct tmd3782_p *data = dev_get_drvdata(dev);
@@ -1013,27 +950,28 @@ static ssize_t tmd3782_prox_thd_high_store(struct device *dev,
 	}
 
 	pr_info("[SENSOR]: %s - thresh_value = %d\n", __func__, thresh_value);
-	data->prox_thd_high = (u16)thresh_value;
-	tmd3782_prox_thd_set(data);
+	data->prox_thd_high = thresh_value;
+	tmd3782_prox_set_threshold(data);
+
 	return size;
 }
 
-static ssize_t tmd3782_prox_thd_low_show(struct device *dev,
+static ssize_t tmd3782_prox_low_threshold_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	struct tmd3782_p *data = dev_get_drvdata(dev);
-	u16 thresh_hi = 0,thresh_low = 0;
+	int thresh_hi = 0, thresh_low = 0;
 
-	tmd3782_i2c_read_word(data, CMD_REG | PRX_MINTHRESHLO, &thresh_low);
-	tmd3782_i2c_read_word(data, CMD_REG | PRX_MAXTHRESHLO, &thresh_hi);
+	thresh_hi = tmd3782_prox_get_threshold(data, PRX_MAXTHRESHLO);
+	thresh_low = tmd3782_prox_get_threshold(data, PRX_MINTHRESHLO);
 
 	pr_info("[SENSOR]: %s - thresh_hi = %d, thresh_low = %d\n",
 		__func__, thresh_hi, thresh_low);
 
-	return sprintf(buf, "%u,%u\n", thresh_hi,thresh_low);
+	return sprintf(buf, "%d,%d\n", thresh_hi, thresh_low);
 }
 
-static ssize_t tmd3782_prox_thd_low_store(struct device *dev,
+static ssize_t tmd3782_prox_low_threshold_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct tmd3782_p *data = dev_get_drvdata(dev);
@@ -1047,22 +985,17 @@ static ssize_t tmd3782_prox_thd_low_store(struct device *dev,
 	}
 
 	pr_info("[SENSOR]: %s - thresh_value = %d\n", __func__, thresh_value);
-	data->prox_thd_low = (u16)thresh_value;
-	tmd3782_prox_thd_set(data);
+	data->prox_thd_low = thresh_value;
+	tmd3782_prox_set_threshold(data);
 	return size;
 }
 
 static ssize_t tmd3782_prox_adc_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	u16 adc = 0;
 	struct tmd3782_p *data = dev_get_drvdata(dev);
 
-	tmd3782_i2c_read_word(data, CMD_REG | PRX_LO, &adc);
-	if (adc > PROX_MAX)
-		adc = PROX_MAX;
-
-	return sprintf(buf, "%d\n", adc);
+	return sprintf(buf, "%d\n", tmd3782_prox_get_adc(data));
 }
 
 static struct device_attribute dev_attr_prox_raw_data =
@@ -1075,9 +1008,9 @@ static DEVICE_ATTR(prox_cal, S_IRUGO | S_IWUSR | S_IWGRP,
 static DEVICE_ATTR(prox_offset_pass, S_IRUGO,
 	tmd3782_prox_offset_pass_show, NULL);
 static DEVICE_ATTR(thresh_high, S_IRUGO | S_IWUSR | S_IWGRP,
-	tmd3782_prox_thd_high_show, tmd3782_prox_thd_high_store);
+	tmd3782_prox_high_threshold_show, tmd3782_prox_high_threshold_store);
 static DEVICE_ATTR(thresh_low, S_IRUGO | S_IWUSR | S_IWGRP,
-	tmd3782_prox_thd_low_show, tmd3782_prox_thd_low_store);
+	tmd3782_prox_low_threshold_show, tmd3782_prox_low_threshold_store);
 
 static struct device_attribute *prox_sensor_attrs[] = {
 	&dev_attr_vendor,
@@ -1118,20 +1051,26 @@ static ssize_t tmd3782_prox_enable_store(struct device *dev,
 	pr_info("[SENSOR]: %s - new_value = %u\n", __func__, enable);
 	if (enable && !(data->power_state & PROXIMITY_ENABLED)) {
 		tmd3782_prox_open_offset(data);
-		data->prox_thd_high = PROX_THD_HIGH_DEFAULT + data->prox_offset;
-		data->prox_thd_low = PROX_THD_LOW_DEFAULT + data->prox_offset;
-		pr_info("[SENSOR]: %s - th_hi = %u, th_low = %u\n", __func__,
+		data->prox_thd_high = data->prox_default_thd_high \
+					+ data->prox_offset;
+		data->prox_thd_low = data->prox_default_thd_low \
+					+ data->prox_offset;
+		pr_info("[SENSOR]: %s - th_hi = %d, th_low = %d\n", __func__,
 				data->prox_thd_high, data->prox_thd_low);
+
+		if (data->power_state == OFF)
+			tmd3782_chip_enable(data, ON);
+
 		data->power_state |= PROXIMITY_ENABLED;
+		data->prox_state = STATE_FAR;
+		tmd3782_prox_set_threshold(data);
+		input_report_abs(data->prox_input, EVENT_TYPE_PROX, 1);
+		input_sync(data->prox_input);
 
 		/* interrupt clearing */
 		tmd3782_i2c_write_cmd(data,
 				CMD_REG | CMD_SPL_FN | CMD_PROXALS_INTCLR);
-		tmd3782_prox_led_onoff(data, true);
-		tmd3782_chip_on(data);
-
-		input_report_abs(data->prox_input, EVENT_TYPE_PROX, 1);
-		input_sync(data->prox_input);
+		tmd3782_prox_led_onoff(data, ON);
 
 		enable_irq(data->prox_irq);
 		enable_irq_wake(data->prox_irq);
@@ -1140,9 +1079,9 @@ static ssize_t tmd3782_prox_enable_store(struct device *dev,
 		disable_irq(data->prox_irq);
 
 		data->power_state &= ~PROXIMITY_ENABLED;
-		if (data->power_state == 0)
-			tmd3782_chip_off(data);
-		tmd3782_prox_led_onoff(data, false);
+		if (data->power_state == OFF)
+			tmd3782_chip_enable(data, OFF);
+		tmd3782_prox_led_onoff(data, OFF);
 	}
 	mutex_unlock(&data->power_lock);
 	return size;
@@ -1232,12 +1171,77 @@ static int tmd3782_prox_setup_irq(struct tmd3782_p *data)
 			tmd3782_prox_irq_thread, IRQF_TRIGGER_FALLING,
 			"tmd3782_prox_irq", data);
 	if (ret < 0) {
-		pr_err("[SENSOR]: %s - failed to set request_threaded_irq %d"
+		pr_err("[SENSOR]: %s - failed to set request_threaded_irq %d"\
 			" as returning (%d)\n", __func__, data->prox_irq, ret);
 		return ret;
 	}
 
 	disable_irq(data->prox_irq);
+	return ret;
+}
+
+static int tmd3782_parse_dt(struct tmd3782_p *data,
+	struct tmd3782_platform_data *pdata)
+{
+	if (pdata == NULL)
+		return -ENODEV;
+
+	data->atime_ms = pdata->atime_ms;
+	data->dgf = pdata->dgf;
+	data->coef_b = pdata->coef_b;
+	data->coef_c = pdata->coef_c;
+	data->coef_d = pdata->coef_d;
+	data->ct_coef = pdata->ct_coef;
+	data->ct_offset = pdata->ct_offset;
+	data->integration_cycle = pdata->integration_cycle;
+	data->prox_default_thd_high = pdata->prox_default_thd_high;
+	data->prox_default_thd_low = pdata->prox_default_thd_low;
+	data->prox_rawdata_trim =  pdata->prox_rawdata_trim;
+
+	return 0;
+}
+
+static int tmd3782_initailize_register(struct tmd3782_p *data)
+{
+	int ret;
+
+	ret = tmd3782_i2c_write(data, CMD_REG | CNTRL, CNTL_PWRON);
+	if (ret < 0)
+		goto exit_i2c_fail;
+
+	ret = tmd3782_i2c_write(data, CMD_REG | ALS_TIME, ALS_TIME_SET);
+	if (ret < 0)
+		goto exit_i2c_fail;
+
+	ret = tmd3782_i2c_write(data, CMD_REG | WAIT_TIME, WAIT_TIME_SET);
+	if (ret < 0)
+		goto exit_i2c_fail;
+
+	ret = tmd3782_i2c_write(data, CMD_REG | INTERRUPT, INTER_FILTER_SET);
+	if (ret < 0)
+		goto exit_i2c_fail;
+
+	ret = tmd3782_i2c_write(data, CMD_REG | PRX_CFG, PRX_CFG_SET);
+	if (ret < 0)
+		goto exit_i2c_fail;
+
+	ret = tmd3782_i2c_write(data, CMD_REG | PRX_COUNT, PRX_PULSE_COUNT_SET);
+	if (ret < 0)
+		goto exit_i2c_fail;
+
+	ret = tmd3782_i2c_write(data, CMD_REG | GAIN, ALS_GAIN_SET);
+	if (ret < 0)
+		goto exit_i2c_fail;
+
+	ret = tmd3782_i2c_write(data, CMD_REG | CNTRL, CNTL_REG_CLEAR);
+	if (ret < 0)
+		goto exit_i2c_fail;
+
+	goto exit;
+
+exit_i2c_fail:
+	pr_err("[SENSOR]: %s - fail! %d\n", __func__, ret);
+exit:
 	return ret;
 }
 
@@ -1261,6 +1265,13 @@ static int tmd3782_probe(struct i2c_client *client,
 		goto exit_kzalloc;
 	}
 
+	ret = tmd3782_parse_dt(data, client->dev.platform_data);
+	if (ret < 0) {
+		pr_err("[SENSOR]: %s - of_node error\n", __func__);
+		ret = -ENODEV;
+		goto exit_of_node;
+	}
+
 	data->prox_irq_gpio = client->irq;
 	ret = tmd3782_prox_setup_pin(data);
 	if (ret < 0) {
@@ -1270,12 +1281,19 @@ static int tmd3782_probe(struct i2c_client *client,
 
 	data->i2c_client = client;
 	i2c_set_clientdata(client, data);
+	data->lux = 0;
 
 	/* ID Check */
 	ret = i2c_smbus_read_byte_data(client, CMD_REG | CHIPID);
 	if (ret != CHIP_ID) {
 		pr_err("[SENSOR]: %s - chipid error [%d]\n", __func__, ret);
 		goto exit_chip_id;
+	}
+
+	ret = tmd3782_initailize_register(data);
+	if (ret < 0) {
+		pr_err("[SENSOR]: %s - init reg error [%d]\n", __func__, ret);
+		goto exit_initailize_register;
 	}
 
 	/* input device init */
@@ -1287,7 +1305,7 @@ static int tmd3782_probe(struct i2c_client *client,
 	if (ret < 0)
 		goto exit_prox_input_init;
 
-	atomic_set(&data->light_poll_delay, TMD3782_LIGHT_DEFAULT_DELAY);
+	atomic_set(&data->light_poll_delay, LIGHT_SENSOR_DEFAULT_DELAY);
 	data->time_count = 0;
 
 	INIT_DELAYED_WORK(&data->light_work, tmd3782_light_work_func);
@@ -1337,9 +1355,11 @@ exit_prox_input_init:
 			&light_attribute_group);
 	input_unregister_device(data->light_input);
 exit_light_input_init:
+exit_initailize_register:
 exit_chip_id:
 	gpio_free(data->prox_irq_gpio);
 exit_setup_pin:
+exit_of_node:
 	kfree(data);
 exit_kzalloc:
 exit:
@@ -1360,13 +1380,13 @@ static void tmd3782_shutdown(struct i2c_client *client)
 			disable_irq_wake(data->prox_irq);
 			disable_irq(data->prox_irq);
 			cancel_delayed_work_sync(&data->prox_work);
-			if (data->prox_avg_enable == 1)
+			if (data->prox_avg_enable == ON)
 				cancel_delayed_work_sync(&data->prox_avg_work);
-			tmd3782_prox_led_onoff(data, false);
+			tmd3782_prox_led_onoff(data, OFF);
 		}
 
-		tmd3782_chip_off(data);
-		data->power_state = 0;
+		tmd3782_chip_enable(data, OFF);
+		data->power_state = OFF;
 	}
 
 	wake_lock_destroy(&data->prox_wake_lock);
@@ -1385,13 +1405,13 @@ static int __devexit tmd3782_remove(struct i2c_client *client)
 			disable_irq_wake(data->prox_irq);
 			disable_irq(data->prox_irq);
 			cancel_delayed_work_sync(&data->prox_work);
-			if (data->prox_avg_enable == 1)
+			if (data->prox_avg_enable == ON)
 				cancel_delayed_work_sync(&data->prox_avg_work);
-			tmd3782_prox_led_onoff(data, false);
+			tmd3782_prox_led_onoff(data, OFF);
 		}
 
-		tmd3782_chip_off(data);
-		data->power_state = 0;
+		tmd3782_chip_enable(data, OFF);
+		data->power_state = OFF;
 	}
 
 	free_irq(data->prox_irq, data);
@@ -1433,7 +1453,7 @@ static int tmd3782_suspend(struct device *dev)
 		tmd3782_light_light_disable(data);
 
 		if (!(data->power_state & PROXIMITY_ENABLED))
-			tmd3782_chip_off(data);
+			tmd3782_chip_enable(data, OFF);
 	}
 
 	return 0;
@@ -1446,7 +1466,7 @@ static int tmd3782_resume(struct device *dev)
 	if (data->power_state & LIGHT_ENABLED) {
 		pr_info("[SENSOR]: %s\n", __func__);
 		if (!(data->power_state & PROXIMITY_ENABLED))
-			tmd3782_chip_on(data);
+			tmd3782_chip_enable(data, ON);
 
 		tmd3782_light_light_enable(data);
 	}

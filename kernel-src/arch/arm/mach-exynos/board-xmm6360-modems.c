@@ -26,6 +26,7 @@
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 #include <linux/usb/ehci_def.h>
+#include <linux/pm_qos.h>
 
 #include <linux/platform_data/modem_v2.h>
 #include <linux/io.h>
@@ -39,92 +40,140 @@ extern unsigned int system_rev;
 
 /* umts target platform data */
 static struct modem_io_t umts_io_devices[] = {
-	[0] = {
+	{
 		.name = "umts_ipc0",
-		.id = 0xEB,
+		.id = SIPC5_CH_ID_FMT_0,
 		.format = IPC_FMT,
 		.io_type = IODEV_MISC,
 		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_SIPC5) | IODEV_ATTR(ATTR_RX_FRAGMENT),
 	},
-	[1] = {
+#ifdef CONFIG_IPC_DS_DN
+	{
+		.name = "umts_ipc1",
+		.id = 0xEC,
+		.format = IPC_FMT,
+		.io_type = IODEV_MISC,
+		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_SIPC5) | IODEV_ATTR(ATTR_RX_FRAGMENT),
+	},
+#endif
+	{
 		.name = "umts_rfs0",
-		.id = 0xF5,
+		.id = SIPC5_CH_ID_RFS_0,
 		.format = IPC_RFS,
 		.io_type = IODEV_MISC,
 		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_SIPC5) | IODEV_ATTR(ATTR_RX_FRAGMENT)
+			| IODEV_ATTR(ATTR_LEGACY_RFS),
 	},
-	[2] = {
+	{
 		.name = "umts_boot0",
 		.id = 0x0,
 		.format = IPC_BOOT,
 		.io_type = IODEV_MISC,
 		.links = LINKTYPE(LINKDEV_HSIC),
 	},
-	[3] = {
+	{
 		.name = "multipdp",
 		.id = 0x0,
 		.format = IPC_MULTI_RAW,
 		.io_type = IODEV_DUMMY,
 		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_SIPC5) | IODEV_ATTR(ATTR_RX_FRAGMENT),
 	},
-	[4] = {
+	{
 		.name = "umts_router",
-		.id = 0x19,
+		.id = SIPC_CH_ID_BT_DUN,
 		.format = IPC_RAW,
 		.io_type = IODEV_MISC,
 		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_SIPC5) | IODEV_ATTR(ATTR_RX_FRAGMENT),
 	},
-	[5] = {
+	{
 		.name = "umts_csd",
-		.id = 0x1,
+		.id = SIPC_CH_ID_CS_VT_DATA,
 		.format = IPC_RAW,
 		.io_type = IODEV_MISC,
 		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_SIPC5) | IODEV_ATTR(ATTR_RX_FRAGMENT),
 	},
-	[6] = {
+	{
 		.name = "umts_dm0",
-		.id = 0x1c,
+		.id = SIPC_CH_ID_CPLOG1,
 		.format = IPC_BOOT,
 		.io_type = IODEV_MISC,
 		.links = LINKTYPE(LINKDEV_HSIC),
 	},
-	[7] = { /* To use IPC_Logger */
+	{ /* To use IPC_Logger */
 		.name = "umts_log",
-		.id = 0x1b,
+		.id = SIPC_CH_ID_PDP_18,
 		.format = IPC_BOOT,
 		.io_type = IODEV_MISC,
 		.links = LINKTYPE(LINKDEV_HSIC),
+	},
+	{
+		.name = "ipc_loopback0",
+		.id = SIPC5_CH_ID_FMT_9,
+		.format = IPC_FMT,
+		.io_type = IODEV_MISC,
+		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_SIPC5) | IODEV_ATTR(ATTR_RX_FRAGMENT),
 	},
 #ifndef CONFIG_USB_NET_CDC_NCM
-	[8] = {
+	{
 		.name = "rmnet0",
-		.id = 0xA,
+		.id = SIPC_CH_ID_PDP_0,
 		.format = IPC_RAW_NCM,
 		.io_type = IODEV_NET,
 		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_CDC_NCM),
 	},
-	[9] = {
+	{
 		.name = "rmnet1",
-		.id = 0xB,
+		.id = SIPC_CH_ID_PDP_1,
 		.format = IPC_RAW_NCM,
 		.io_type = IODEV_NET,
 		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_CDC_NCM),
 	},
-	[10] = {
+	{
 		.name = "rmnet2",
-		.id = 0xC,
+		.id = SIPC_CH_ID_PDP_2,
 		.format = IPC_RAW_NCM,
 		.io_type = IODEV_NET,
 		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_CDC_NCM),
 	},
-	[11] = {
+	{
 		.name = "rmnet3",
-		.id = 0xD,
+		.id = SIPC_CH_ID_PDP_3,
 		.format = IPC_RAW_NCM,
 		.io_type = IODEV_NET,
 		.links = LINKTYPE(LINKDEV_HSIC),
+		.attr = IODEV_ATTR(ATTR_CDC_NCM),
 	},
 #endif
+};
+
+static struct pm_qos_request mif_qos_req;
+static struct pm_qos_request int_qos_req;
+#define REQ_PM_QOS(req, class_id, arg) \
+	do { \
+		if (pm_qos_request_active(req)) \
+			pm_qos_update_request(req, arg); \
+		else \
+			pm_qos_add_request(req, class_id, arg); \
+	} while (0) \
+
+#define MAX_FREQ_LEVEL 2
+static struct {
+	unsigned throughput;
+	unsigned mif_freq_lock;
+	unsigned int_freq_lock;
+} freq_table[MAX_FREQ_LEVEL] = {
+	{ 100, 266000, 133000 }, /* default */
+	{ 150, 667000, 500000 }, /* 100Mbps */
 };
 
 static int umts_link_ldo_enble(bool enable)
@@ -252,6 +301,8 @@ static void s5p_ehci_wait_cp_resume(int port)
 }
 
 static int xmm_cp_force_crash_exit(void);
+static void exynos_frequency_unlock(void);
+static void exynos_frequency_lock(unsigned long qosval);
 static struct modemlink_pm_data modem_link_pm_data = {
 	.name = "link_pm",
 	.link_ldo_enable = umts_link_ldo_enble,
@@ -263,6 +314,9 @@ static struct modemlink_pm_data modem_link_pm_data = {
 	.ehci_reg_dump = debug_ehci_reg_dump,
 	.port = 2,
 	.wait_cp_resume = s5p_ehci_wait_cp_resume,
+	.freqlock = ATOMIC_INIT(0),
+	.freq_lock = exynos_frequency_lock,
+	.freq_unlock = exynos_frequency_unlock,
 };
 
 static struct platform_device modem_linkpm_xmm626x = {
@@ -320,6 +374,61 @@ static struct platform_device umts_modem = {
 		.platform_data = &umts_modem_data,
 	},
 };
+
+static void exynos_frequency_unlock(void)
+{
+	if (atomic_read(&modem_link_pm_data.freqlock) != 0) {
+		mif_info("unlocking level = %d\n",
+			atomic_read(&modem_link_pm_data.freqlock));
+
+		REQ_PM_QOS(&int_qos_req, PM_QOS_DEVICE_THROUGHPUT, 0);
+		REQ_PM_QOS(&mif_qos_req, PM_QOS_BUS_THROUGHPUT, 0);
+		atomic_set(&modem_link_pm_data.freqlock, 0);
+	} else {
+		mif_debug("already unlocked, curr_level = %d\n",
+			atomic_read(&modem_link_pm_data.freqlock));
+	}
+}
+
+static void exynos_frequency_lock(unsigned long qosval)
+{
+	int level;
+	unsigned mif_freq, int_freq;
+
+	for (level = 0; level < MAX_FREQ_LEVEL; level++)
+		if (qosval < freq_table[level].throughput)
+			break;
+
+	level = min(level, MAX_FREQ_LEVEL - 1);
+	if (!level && atomic_read(&modem_link_pm_data.freqlock)) {
+		mif_debug("locked level = %d, requested level = %d\n",
+			atomic_read(&modem_link_pm_data.freqlock), level);
+		exynos_frequency_unlock();
+		atomic_set(&modem_link_pm_data.freqlock, level);
+		return;
+	}
+
+	mif_freq = freq_table[level].mif_freq_lock;
+	int_freq = freq_table[level].int_freq_lock;
+
+	if (atomic_read(&modem_link_pm_data.freqlock) != level) {
+		mif_debug("locked level = %d, requested level = %d\n",
+			atomic_read(&modem_link_pm_data.freqlock), level);
+
+		exynos_frequency_unlock();
+		mdelay(50);
+
+		REQ_PM_QOS(&mif_qos_req, PM_QOS_BUS_THROUGHPUT, mif_freq);
+		REQ_PM_QOS(&int_qos_req, PM_QOS_DEVICE_THROUGHPUT, int_freq);
+		atomic_set(&modem_link_pm_data.freqlock, level);
+
+		mif_info("TP=%ld, MIF=%d, INT=%d\n",
+				qosval, mif_freq, int_freq);
+	} else {
+		mif_debug("already locked, curr_level = %d[%d]\n",
+			atomic_read(&modem_link_pm_data.freqlock), level);
+	}
+}
 
 static void umts_modem_cfg_gpio(void)
 {

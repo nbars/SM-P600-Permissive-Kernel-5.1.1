@@ -297,6 +297,8 @@ int diag_bridge_write(char *data, int size)
 	if (!dev || !dev->udev)
 		return -ENODEV;
 
+	usb_mark_last_busy(dev->udev);
+
 	if (!size) {
 		dev_err(&dev->udev->dev, "invalid size:%d\n", size);
 		return -EINVAL;

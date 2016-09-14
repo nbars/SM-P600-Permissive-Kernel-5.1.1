@@ -603,9 +603,6 @@ static void dump_cpu_stat(void);
 static int sec_debug_panic_handler(struct notifier_block *nb,
 				   unsigned long l, void *buf)
 {
-	if (!sec_debug_level.en.kernel_fault)
-		return -1;
-
 	pm_qos_add_request(&panic_mif_qos, PM_QOS_BUS_THROUGHPUT, 800000);
 	pm_qos_add_request(&panic_int_qos, PM_QOS_DEVICE_THROUGHPUT, 600000);
 
@@ -638,16 +635,19 @@ static int sec_debug_panic_handler(struct notifier_block *nb,
 	sec_debug_disable_watchdog();
 #endif
 
+	if(sec_debug_level.en.kernel_fault) {
 #ifdef CONFIG_SEC_DEBUG_FUPLOAD_DUMP_MORE
-	dump_all_task_info();
-	dump_cpu_stat();
+		dump_all_task_info();
+		dump_cpu_stat();
 
-	show_state_filter(TASK_STATE_MAX);	/* no backtrace */
+		show_state_filter(TASK_STATE_MAX);	/* no backtrace */
 #else
-	show_state();
+		show_state();
 #endif
 
-	sec_debug_dump_stack();
+		sec_debug_dump_stack();
+	}
+
 	sec_debug_hw_reset();
 
 	return 0;
@@ -1704,6 +1704,11 @@ static int __devinit sec_input_debug_probe(struct platform_device *pdev)
 	int i = 0;
 
 	ddata = kzalloc(sizeof(struct input_debug_drv_data), GFP_KERNEL);
+
+	if (!ddata) {
+		pr_err("no memory for ddata\n");
+		return -ENOMEM;
+	}
 
 	ddata->pdata = pdata;
 

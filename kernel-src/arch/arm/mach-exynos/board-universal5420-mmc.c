@@ -178,18 +178,15 @@ static struct dw_mci_board universal5420_dwmci0_pdata __initdata = {
 	.ch_num			= 0,
 	.quirks			= DW_MCI_QUIRK_BROKEN_CARD_DETECTION |
 				  DW_MCI_QUIRK_HIGHSPEED |
-#if defined(CONFIG_N2A) || defined(CONFIG_CHAGALL)
 				  DW_MCI_QUIRK_NO_DETECT_EBIT |
 				  DW_MMC_QUIRK_USE_FINE_TUNING,
-#else
-				  DW_MCI_QUIRK_NO_DETECT_EBIT,
-#endif
 	.bus_hz			= 666 * 1000 * 1000 / 4,
 	.caps			= MMC_CAP_CMD23 | MMC_CAP_8_BIT_DATA |
 				  MMC_CAP_UHS_DDR50 | MMC_CAP_1_8V_DDR |
 				  MMC_CAP_ERASE | MMC_CAP_HW_RESET,
 	.caps2			= MMC_CAP2_HS200_1_8V_SDR | MMC_CAP2_HS200_1_8V_DDR |
 				  MMC_CAP2_CACHE_CTRL | MMC_CAP2_BROKEN_VOLTAGE |
+				  MMC_CAP2_STROBE_ENHANCED |
 				  MMC_CAP2_NO_SLEEP_CMD | MMC_CAP2_POWEROFF_NOTIFY,
 	.fifo_depth		= 0x40,
 	.detect_delay_ms	= 200,
@@ -233,7 +230,7 @@ static void exynos_dwmci1_cfg_gpio(int width)
 	unsigned int gpio;
 
 	for (gpio = EXYNOS5420_GPC1(0); gpio < EXYNOS5420_GPC1(3); gpio++) {
-#if defined(CONFIG_V1A) || defined(CONFIG_V2A) || defined(CONFIG_CHAGALL)
+#if defined(CONFIG_V1A) || defined(CONFIG_V2A) || defined(CONFIG_CHAGALL) || defined(CONFIG_KLIMT)
 		if (gpio == EXYNOS5420_GPC1(2)) {
 			/* GPS_EN */
 			continue;
@@ -264,7 +261,7 @@ static void exynos_dwmci1_cfg_gpio(int width)
 			s5p_gpio_set_drvstr(gpio, S5P_GPIO_DRVSTR_LV3);
 		}
 
-#if !defined(CONFIG_CHAGALL)
+#if !(defined(CONFIG_CHAGALL) || defined(CONFIG_KLIMT))
 		for (gpio = EXYNOS5420_GPD1(4);
 				gpio <= EXYNOS5420_GPD1(7); gpio++) {
 			s3c_gpio_cfgpin(gpio, S3C_GPIO_SFN(2));
@@ -334,8 +331,8 @@ EXPORT_SYMBOL_GPL(mmc_force_presence_change);
 #if defined(CONFIG_ARM_EXYNOS5420_BUS_DEVFREQ)
 static struct dw_mci_mon_table exynos_dwmci_tp_mon1_tbl[] = {
 	/* Byte/s, MIF clk, CPU clk */
-	{  15360000, 733000, 1500000},
-	{  10240000, 400000,       0},
+	{  15360000, 733000, 1900000},
+	{   7864320, 400000, 1500000},
 	{         0,      0,       0},
 };
 #endif
@@ -590,7 +587,7 @@ static struct dw_mci_board universal5420_dwmci2_pdata __initdata = {
 				  MMC_CAP_4_BIT_DATA |
 				  MMC_CAP_SD_HIGHSPEED |
 				  MMC_CAP_MMC_HIGHSPEED |
-#if defined(CONFIG_N1A) || defined(CONFIG_N2A)
+#if defined(CONFIG_N1A) || defined(CONFIG_N2A) || defined(CONFIG_CHAGALL)
 				  MMC_CAP_UHS_SDR50,
 #else
 				  MMC_CAP_UHS_SDR50 |
@@ -603,7 +600,7 @@ static struct dw_mci_board universal5420_dwmci2_pdata __initdata = {
 	.cfg_gpio		= exynos_dwmci2_cfg_gpio,
 	.get_bus_wd		= exynos_dwmci2_get_bus_wd,
 	.save_drv_st	= exynos_dwmci_save_drv_st,
-	.restore_drv_st	= exynos_dwmci_restore_drv_st_with_compensation,
+	.restore_drv_st	= exynos_dwmci_restore_drv_st,
 	.tuning_drv_st	= exynos_dwmci_tuning_drv_st,
 	.sdr_timing		= 0x03040000,
 	.ddr_timing		= 0x03020000,

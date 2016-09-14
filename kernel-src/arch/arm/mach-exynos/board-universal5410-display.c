@@ -31,6 +31,7 @@
 #ifdef CONFIG_FB_MIPI_DSIM
 #include <plat/dsim.h>
 #include <plat/mipi_dsi.h>
+#include <plat/regs-mipidsim.h>
 #endif
 
 unsigned int lcdtype;
@@ -859,7 +860,7 @@ static struct mipi_dsim_config dsim_info = {
 
 
 	/* D-PHY PLL stable time spec :min = 200usec ~ max 400usec */
-	.pll_stable_time = 500,
+	.pll_stable_time = DPHY_PLL_STABLE_TIME,
 
 	.esc_clk = 8 * MHZ,
 
@@ -935,16 +936,9 @@ static struct s5p_platform_mipi_dsim dsim_platform_data = {
 	.dsim_lcd_config	= &dsim_lcd_info,
 
 	.mipi_power		= mipi_lcd_power_control,
-	.part_reset		= s5p_dsim_part_reset,
 	.init_d_phy		= s5p_dsim_init_d_phy,
 	.get_fb_frame_done	= NULL,
 	.trigger		= NULL,
-
-	/*
-	 * The stable time of needing to write data on SFR
-	 * when the mipi mode becomes LP mode.
-	 */
-	.delay_for_stabilization = 600,
 };
 #endif
 
@@ -996,14 +990,6 @@ static struct s5p_dp_platdata universal5410_dp_data __initdata = {
 };
 #endif
 
-#ifdef CONFIG_FB_S5P_EXTDSP
-static struct s3c_fb_pd_win default_extdsp_data = {
-	.width = 1920,
-	.height = 1080,
-	.default_bpp = 32,
-};
-#endif
-
 static struct platform_device *universal5410_display_devices[] __initdata = {
 #ifdef CONFIG_FB_MIPI_DSIM
 	&universal5410_mipi_lcd,
@@ -1014,11 +1000,6 @@ static struct platform_device *universal5410_display_devices[] __initdata = {
 	&s5p_device_dp,
 	&universal5410_dp_lcd,
 #endif
-
-#ifdef CONFIG_FB_S5P_EXTDSP
-	&s5p_device_extdsp,
-#endif
-};
 
 void __init exynos5_universal5410_display_init(void)
 {
@@ -1032,10 +1013,6 @@ void __init exynos5_universal5410_display_init(void)
 	s5p_fimd1_set_platdata(&universal5410_lcd1_pdata);
 #if !defined(CONFIG_MACH_UNIVERSAL5410)
 	samsung_bl_set(&universal5410_bl_gpio_info, &universal5410_bl_data);
-#endif
-
-#ifdef CONFIG_FB_S5P_EXTDSP
-	s3cfb_extdsp_set_platdata(&default_extdsp_data);
 #endif
 
 	platform_add_devices(universal5410_display_devices,

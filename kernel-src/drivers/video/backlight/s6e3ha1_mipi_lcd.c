@@ -16,6 +16,7 @@
 #include <linux/wait.h>
 #include <linux/ctype.h>
 #include <linux/io.h>
+#include <linux/irq.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
@@ -26,6 +27,7 @@
 
 #include <video/mipi_display.h>
 #include <plat/dsim.h>
+#include <plat/regs-mipidsim.h>
 #include <plat/mipi_dsi.h>
 #include <plat/gpio-cfg.h>
 #include <asm/system_info.h>
@@ -33,8 +35,12 @@
 #include "s6e3ha1_param.h"
 
 #include "dynamic_aid_s6e3ha1.h"
+#include "dynamic_aid_s6e3ha1_RevB.h"
+#include "dynamic_aid_s6e3ha1_RevC.h"
 
 #include "../s5p_mipi_dsi_lowlevel.h"
+#include <linux/notifier.h>
+#include <linux/fb.h>
 
 #if defined(CONFIG_FB_S5P_MDNIE_LITE)
 #include <linux/mdnie.h>
@@ -67,12 +73,12 @@
 #define LDI_TSET_REG			0xB8
 #define LDI_TSET_LEN			5
 #define TSET_PARAM_SIZE		(LDI_TSET_LEN + 1)
-#define LDI_HBM_REG		0xB8
-#define LDI_HBM_LEN		40
 #define LDI_HBMELVSS_LEN	21
 
 #define LDI_COORDINATE_REG		0xA1
 #define LDI_COORDINATE_LEN		4
+#define ERRFG_PEND_REG		0x14000A14	/*EXT_INT22_PEND*/
+#define ERRFG_PEND_MASK		(1 << 5)	/*EXT_INT22_PEND[5]*/
 
 #ifdef SMART_DIMMING_DEBUG
 #define smtd_dbg(format, arg...)	printk(format, ##arg)
@@ -139,8 +145,32 @@ struct lcd_info {
 
 	struct mipi_dsim_device		*dsim;
 	unsigned int			*gamma_level;
+	int				errfg_irq;
+	unsigned int			err_count;
+	struct delayed_work		err_worker;
+	spinlock_t			slock;
+	void __iomem			*errfg_pend;
+
+	struct notifier_block	fb_notif;
+	unsigned int			fb_unblank;
 };
 
+static void s6e3ha1_enable_errfg(struct lcd_info *lcd);
+
+
+#ifdef CONFIG_FB_HW_TRIGGER
+static struct lcd_info *g_lcd;
+
+int lcd_get_mipi_state(struct device *dsim_device)
+{
+	struct lcd_info *lcd = g_lcd;
+
+	if (lcd->connected && !lcd->err_count)
+		return 0;
+	else
+		return -ENODEV;
+}
+#endif
 int s6e3ha1_write(struct lcd_info *lcd, const u8 *seq, u32 len)
 {
 	int ret;
@@ -154,8 +184,9 @@ int s6e3ha1_write(struct lcd_info *lcd, const u8 *seq, u32 len)
 
 	if (len > 2)
 		cmd = MIPI_DSI_DCS_LONG_WRITE;
-	else if (len == 2)
-		cmd = MIPI_DSI_DCS_SHORT_WRITE_PARAM;
+	else if (len == 2) /*use DCS long write until get patch from S.LSI*/
+	//	cmd = MIPI_DSI_DCS_SHORT_WRITE_PARAM;
+		cmd = MIPI_DSI_DCS_LONG_WRITE;
 	else if (len == 1)
 		cmd = MIPI_DSI_DCS_SHORT_WRITE;
 	else {
@@ -225,6 +256,7 @@ read_err:
 	return ret;
 }
 
+#ifdef CONFIG_FB_S5P_MDNIE_LITE
 int s6e3ha1_mdnie_read(struct device *dev, u8 addr, u8 *buf, u32 len)
 {
 	struct lcd_info *lcd = dev_get_drvdata(dev);
@@ -258,7 +290,7 @@ int s6e3ha1_mdnie_write(struct device *dev, const u8 *seq, u32 len)
 
 	return len;
 }
-
+#endif
 
 static void s6e3ha1_read_coordinate(struct lcd_info *lcd)
 {
@@ -295,6 +327,31 @@ static void s6e3ha1_read_ddi_id(struct lcd_info *lcd, u8 *buf)
 		dev_info(&lcd->ld->dev, "%s failed\n", __func__);
 }
 
+static void s6e3ha1_update_seq(struct lcd_info *lcd)
+{
+	u8 id;
+
+	if(lcd->id[0] == 0)
+		return;
+
+	id = lcd->id[2];
+
+	if(id < 0x02) {
+		dev_info(&lcd->ld->dev, "%s id = %d\n", __func__, id);
+		paor_cmd = aor_cmd_RevB;
+		pbrightness_base_table = brightness_base_table_RevB;
+		poffset_gradation = offset_gradation_RevB;
+		poffset_color = offset_color_RevB;
+		pELVSS_TABLE = ELVSS_TABLE_RevB;
+	} else if(id < 0x03) {
+		dev_info(&lcd->ld->dev, "%s id = %d\n", __func__, id);
+		paor_cmd = aor_cmd_RevC;
+		pbrightness_base_table = brightness_base_table_RevC;
+		poffset_gradation = offset_gradation_RevC;
+		poffset_color = offset_color_RevC;
+	}
+
+}
 static int s6e3ha1_read_mtp(struct lcd_info *lcd, u8 *buf)
 {
 	int ret, i;
@@ -303,6 +360,9 @@ static int s6e3ha1_read_mtp(struct lcd_info *lcd, u8 *buf)
 
 	if (ret < 1)
 		dev_err(&lcd->ld->dev, "%s failed\n", __func__);
+
+	/* HBM on ELVSS setting */
+	lcd->elvss_hbm[1] = buf[39];
 
 	/* manufacture date */
 	lcd->date[0] = buf[40];
@@ -318,14 +378,11 @@ static int s6e3ha1_read_mtp(struct lcd_info *lcd, u8 *buf)
 static int s6e3ha1_read_elvss_hbm(struct lcd_info *lcd)
 {
 	int ret, i;
-	u8 buf[LDI_HBM_LEN];
+	u8 buf[LDI_HBMELVSS_LEN];
 
-
+	/* ELVSS setting if it is not HBM mode */
 	ret = s6e3ha1_read(lcd, LDI_ELVSS_REG, buf, LDI_HBMELVSS_LEN);
-	lcd->elvss_hbm[0] = buf[LDI_HBMELVSS_LEN-1]; //off
-
-	ret = s6e3ha1_read(lcd, LDI_HBM_REG, buf, LDI_HBM_LEN);
-	lcd->elvss_hbm[1] = buf[LDI_HBM_LEN-1]; //on
+	lcd->elvss_hbm[0] = buf[LDI_HBMELVSS_LEN-1];
 
 	return ret;
 }
@@ -440,12 +497,12 @@ exit:
 
 static int s6e3ha1_set_acl(struct lcd_info *lcd, u8 force)
 {
-	int ret = 0, level = ACL_STATUS_25P;
+	int ret = 0, level = ACL_STATUS_15P;
 
-	if (lcd->siop_enable || LEVEL_IS_HBM(lcd->auto_brightness))
+	if (lcd->siop_enable)
 		goto acl_update;
 
-	if (!lcd->acl_enable)
+	if ((!lcd->acl_enable) || LEVEL_IS_HBM(lcd->auto_brightness))
 		level = ACL_STATUS_0P;
 
 acl_update:
@@ -486,7 +543,7 @@ static int s6e3ha1_set_elvss(struct lcd_info *lcd, u8 force)
 		if (ret < 0)
 			goto exit;
 		lcd->current_elvss.value = elvss.value;
-		dev_dbg(&lcd->ld->dev, "elvss set = {%x, %x}\n", lcd->current_elvss.mps, lcd->current_elvss.offset);
+		dev_info(&lcd->ld->dev, "elvss set = {%x, %x}\n", lcd->current_elvss.mps, lcd->current_elvss.offset);
 	}
 
 	if (elvss_level == ELVSS_STATUS_HBM)
@@ -505,7 +562,7 @@ static int s6e3ha1_set_elvss(struct lcd_info *lcd, u8 force)
 			goto exit;
 
 		lcd->current_hbm = SEQ_ELVSS_HBM[1];
-		dev_dbg(&lcd->ld->dev, "hbm elvss_level = %d, SEQ_ELVSS_HBM = {%x, %x}\n", elvss_level, SEQ_ELVSS_HBM[0], SEQ_ELVSS_HBM[1]);
+		dev_info(&lcd->ld->dev, "hbm elvss_level = %d, SEQ_ELVSS_HBM = {%x, %x}\n", elvss_level, SEQ_ELVSS_HBM[0], SEQ_ELVSS_HBM[1]);
 	}
 
 exit:
@@ -562,9 +619,9 @@ static void init_dynamic_aid(struct lcd_info *lcd)
 	lcd->daid.gc_tbls = gamma_curve_tables;
 	lcd->daid.gc_lut = gamma_curve_lut;
 
-	lcd->daid.br_base = brightness_base_table;
-	lcd->daid.offset_gra = offset_gradation;
-	lcd->daid.offset_color = (const struct rgb_t(*)[])offset_color;
+	lcd->daid.br_base = pbrightness_base_table;
+	lcd->daid.offset_gra = poffset_gradation;
+	lcd->daid.offset_color = (const struct rgb_t(*)[])poffset_color;
 }
 
 static void init_mtp_data(struct lcd_info *lcd, const u8 *mtp_data)
@@ -882,9 +939,15 @@ static int s6e3ha1_ldi_init(struct lcd_info *lcd)
 	int ret = 0;
 
 	lcd->connected = 1;
+	s6e3ha1_read_id(lcd, lcd->id);
+	dev_info(&lcd->ld->dev," %s : id [%x] [%x] [%x] \n", __func__,
+			lcd->id[0], lcd->id[1], lcd->id[2]);
 
 	s6e3ha1_write(lcd, SEQ_TEST_KEY_ON_F0, ARRAY_SIZE(SEQ_TEST_KEY_ON_F0));
 	s6e3ha1_write(lcd, SEQ_TEST_KEY_ON_FC, ARRAY_SIZE(SEQ_TEST_KEY_ON_FC));
+
+	/*2.1 TE(Vsync) ON/OFF*/
+	s6e3ha1_write(lcd, SEQ_TE_ON, ARRAY_SIZE(SEQ_TE_ON));
 
 	/* 1. Interface Control (Single DSI, MIC) */
 	s6e3ha1_write(lcd, SEQ_MIPI_SINGLE_DSI_SET1, ARRAY_SIZE(SEQ_MIPI_SINGLE_DSI_SET1));
@@ -896,16 +959,12 @@ static int s6e3ha1_ldi_init(struct lcd_info *lcd)
 	/* Wait 20ms */
 	msleep(120);
 
-	s6e3ha1_read_id(lcd, lcd->id);
-
 	/* 1.1 Interface Control (Single DSI, MIC) */
 	s6e3ha1_write(lcd, SEQ_MIPI_SINGLE_DSI_SET1, ARRAY_SIZE(SEQ_MIPI_SINGLE_DSI_SET1));
 
 	s6e3ha1_write(lcd, SEQ_MIPI_SINGLE_DSI_SET2, ARRAY_SIZE(SEQ_MIPI_SINGLE_DSI_SET2));
 	s6e3ha1_write(lcd, SEQ_PSR_ON, ARRAY_SIZE(SEQ_PSR_ON));
 
-	/*2.1 TE(Vsync) ON/OFF*/
-	s6e3ha1_write(lcd, SEQ_TE_ON, ARRAY_SIZE(SEQ_TE_ON));
 
 	/* 2.2 TSP TE(Hsync, Vsync) Control */
 	s6e3ha1_write(lcd, SEQ_TOUCH_HSYNC_ON, ARRAY_SIZE(SEQ_TOUCH_HSYNC_ON));
@@ -916,7 +975,7 @@ static int s6e3ha1_ldi_init(struct lcd_info *lcd)
 	/* 2.4 POC setting */
 	s6e3ha1_write(lcd, SEQ_GLOBAL_PARA_33rd, ARRAY_SIZE(SEQ_GLOBAL_PARA_33rd));
 	s6e3ha1_write(lcd, SEQ_POC_SETTING, ARRAY_SIZE(SEQ_POC_SETTING));
-
+	s6e3ha1_write(lcd, SEQ_SETUP_MARGIN, ARRAY_SIZE(SEQ_SETUP_MARGIN));
 
 	/* 3. Brightness Control */
 	/* 4. ELVSS Control */
@@ -927,8 +986,6 @@ static int s6e3ha1_ldi_init(struct lcd_info *lcd)
 	s6e3ha1_write(lcd, SEQ_TEST_KEY_OFF_FC, ARRAY_SIZE(SEQ_TEST_KEY_OFF_FC));
 	s6e3ha1_write(lcd, SEQ_TEST_KEY_OFF_F0, ARRAY_SIZE(SEQ_TEST_KEY_OFF_F0));
 
-	msleep(120);
-
 	return ret;
 }
 
@@ -936,9 +993,14 @@ static int s6e3ha1_ldi_enable(struct lcd_info *lcd)
 {
 	int ret = 0;
 
+	msleep(16);
 	s6e3ha1_write(lcd, SEQ_DISPLAY_ON, ARRAY_SIZE(SEQ_DISPLAY_ON));
 
 	dev_info(&lcd->ld->dev, "DISPLAY_ON\n");
+
+	mutex_lock(&lcd->bl_lock);
+	lcd->ldi_enable = 1;
+	mutex_unlock(&lcd->bl_lock);
 
 	return ret;
 }
@@ -980,6 +1042,7 @@ static int s6e3ha1_power_on(struct lcd_info *lcd)
 		goto err;
 	}
 
+#if 0 /* move to s6e3fa0_fb_notifier_callback to write disp on command after fb_unblank */
 	ret = s6e3ha1_ldi_enable(lcd);
 	if (ret) {
 		dev_err(&lcd->ld->dev, "failed to enable ldi.\n");
@@ -989,8 +1052,12 @@ static int s6e3ha1_power_on(struct lcd_info *lcd)
 	mutex_lock(&lcd->bl_lock);
 	lcd->ldi_enable = 1;
 	mutex_unlock(&lcd->bl_lock);
+#endif
 
-	update_brightness(lcd, 1);
+//	update_brightness(lcd, 1);
+
+	if (!lcd->err_count)
+		s6e3ha1_enable_errfg(lcd);
 
 	dev_info(&lcd->ld->dev, "- %s\n", __func__);
 err:
@@ -1002,6 +1069,9 @@ static int s6e3ha1_power_off(struct lcd_info *lcd)
 	int ret = 0;
 
 	dev_info(&lcd->ld->dev, "+ %s\n", __func__);
+
+	if (!lcd->err_count)
+		disable_irq(lcd->errfg_irq);
 
 	mutex_lock(&lcd->bl_lock);
 	lcd->ldi_enable = 0;
@@ -1073,15 +1143,13 @@ static int s6e3ha1_set_brightness(struct backlight_device *bd)
 			MIN_BRIGHTNESS, lcd->bd->props.max_brightness, brightness);
 		return -EINVAL;
 	}
-
-	if (lcd->ldi_enable) {
+	if (lcd->ldi_enable && lcd->fb_unblank) {
 		ret = update_brightness(lcd, 0);
 		if (ret < 0) {
 			dev_err(&lcd->ld->dev, "err in %s\n", __func__);
 			return -EINVAL;
 		}
 	}
-
 	return ret;
 }
 
@@ -1109,6 +1177,54 @@ static struct mdnie_ops s6e3ha1_mdnie_ops = {
 	.read = s6e3ha1_mdnie_read,
 };
 #endif
+
+static int s6e3ha1_fb_notifier_callback(struct notifier_block *self,
+		unsigned long event, void *data)
+{
+	struct lcd_info *lcd;
+	struct fb_event *blank = (struct fb_event*) data;
+	unsigned int *value = (unsigned int*)blank->data;
+	int ret = 0;
+
+	lcd = container_of(self, struct lcd_info, fb_notif);
+
+	if (event == FB_EVENT_BLANK) {
+		switch (*value) {
+		case FB_BLANK_POWERDOWN:
+		case FB_BLANK_NORMAL:
+			lcd->fb_unblank = 0;
+			break;
+		case FB_BLANK_UNBLANK:
+			s6e3ha1_ldi_enable(lcd);
+			lcd->fb_unblank = 1;
+
+#ifdef CONFIG_FB_HW_TRIGGER
+			/* if FullLMain is 1, Mipi cmd cannot be transmitted. */
+			/* PLM : P150407-04942(T705) */
+			if( lcd->dsim && (readl(lcd->dsim->reg_base + S5P_DSIM_FIFOCTRL)&0x200) ) {
+				s5p_mipi_dsi_func_reset(lcd->dsim);
+				dev_err(&lcd->ld->dev, "%s : Main display payload FIFO is full\n", __func__ );
+			}
+#endif
+
+			update_brightness(lcd, 0);
+			break;
+		default:
+			break;
+		}
+	}
+
+	return 0;
+}
+
+static int s6e3ha1_register_fb(struct lcd_info *lcd)
+{
+	memset(&lcd->fb_notif, 0, sizeof(lcd->fb_notif));
+	lcd->fb_notif.notifier_call = s6e3ha1_fb_notifier_callback;
+
+	return fb_register_client(&lcd->fb_notif);
+}
+
 
 static ssize_t power_reduce_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -1142,6 +1258,94 @@ static ssize_t power_reduce_store(struct device *dev,
 	}
 	return size;
 }
+static void s6e3ha1_enable_errfg(struct lcd_info *lcd)
+{
+	u32 irq_ctrl_reg;
+
+	if (!IS_ERR_OR_NULL(lcd->errfg_pend)) {
+		irq_ctrl_reg = readl(lcd->errfg_pend);
+		if (irq_ctrl_reg & ERRFG_PEND_MASK)
+			writel(ERRFG_PEND_MASK, lcd->errfg_pend);
+	}
+	enable_irq(lcd->errfg_irq);
+}
+
+static void err_detection_work(struct work_struct *work)
+{
+	struct lcd_info *lcd =
+		container_of(work, struct lcd_info, err_worker.work);
+
+	dev_info(&lcd->ld->dev, "%s, %d\n", __func__, lcd->err_count);
+
+	if (!lcd->ldi_enable) {
+		dev_info(&lcd->ld->dev, "%s ldi off\n", __func__);
+		lcd->err_count = 0;
+		return;
+	}
+#if 0
+	s5p_mipi_dsi_disable_by_fimd(lcd->dev);
+	msleep(50);
+	s5p_mipi_dsi_enable_by_fimd(lcd->dev);
+#else //HS toggle
+	s5p_dsim_frame_done_interrupt_enable(lcd->dev);
+#endif
+	lcd->err_count = 0;
+	enable_irq(lcd->errfg_irq);
+}
+
+static irqreturn_t s6e3ha1_irq(int irq, void *dev_id)
+{
+	struct lcd_info *lcd = dev_id;
+
+	spin_lock(&lcd->slock);
+
+	dev_info(&lcd->ld->dev,"%s, %d\n", __func__, lcd->err_count);
+
+	lcd->err_count++;
+	if (lcd->err_count == 1) {
+		disable_irq_nosync(lcd->errfg_irq);
+		schedule_delayed_work(&lcd->err_worker, msecs_to_jiffies(500));
+	}
+
+	spin_unlock(&lcd->slock);
+
+	return IRQ_HANDLED;
+}
+
+static int s6e3ha1_init_irq(struct lcd_info *lcd)
+{
+	struct lcd_platform_data *lcd_pd = NULL;
+	int ret = 0;
+
+	/* IRQ setting */
+	if (lcd->dsim->pd->dsim_lcd_config->mipi_ddi_pd)
+		lcd_pd = (struct lcd_platform_data *)lcd->dsim->pd->dsim_lcd_config->mipi_ddi_pd;
+
+	if (lcd_pd && lcd_pd->pdata)
+		lcd->errfg_irq = *((int *)lcd_pd->pdata);
+	else
+		lcd->errfg_irq = -EINVAL;
+
+	dev_info(&lcd->ld->dev, "%s errfg_irq = %d\n", __func__, lcd->errfg_irq);
+
+	if (lcd->errfg_irq >= 0) {
+		lcd->errfg_pend = ioremap(ERRFG_PEND_REG, 0x4);
+		if (IS_ERR_OR_NULL(lcd->errfg_pend))
+			pr_err("%s: fail to ioremap\n", __func__);
+
+		INIT_DELAYED_WORK(&lcd->err_worker, err_detection_work);
+		spin_lock_init(&lcd->slock);
+
+		ret = devm_request_irq(lcd->dev, lcd->errfg_irq, s6e3ha1_irq,
+				  IRQF_TRIGGER_RISING, "s6e3ha1", lcd);
+		if (ret)
+			dev_err(&lcd->ld->dev, "irq request failed %d\n",
+				lcd->errfg_irq);
+	}
+
+	return ret;
+}
+
 
 static ssize_t lcd_type_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -1152,6 +1356,7 @@ static ssize_t lcd_type_show(struct device *dev,
 
 	return strlen(buf);
 }
+
 
 static ssize_t window_type_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -1291,7 +1496,7 @@ static ssize_t temperature_store(struct device *dev,
 		mutex_unlock(&lcd->bl_lock);
 
 		if (lcd->ldi_enable)
-			update_brightness(lcd, 0);
+			update_brightness(lcd, 1);
 
 		dev_info(dev, "%s: %d, %d\n", __func__, value, lcd->temperature );
 	}
@@ -1402,7 +1607,9 @@ static int s6e3ha1_probe(struct mipi_dsim_device *dsim)
 		ret = PTR_ERR(lcd->bd);
 		goto out_free_backlight;
 	}
-
+#ifdef CONFIG_FB_HW_TRIGGER
+	g_lcd = lcd;
+#endif
 	lcd->dev = dsim->dev;
 	lcd->dsim = dsim;
 	lcd->bd->props.max_brightness = MAX_BRIGHTNESS;
@@ -1420,6 +1627,7 @@ static int s6e3ha1_probe(struct mipi_dsim_device *dsim)
 	lcd->connected = 1;
 	lcd->siop_enable = 0;
 	lcd->temperature = NORMAL_TEMPERATURE;
+	lcd->fb_unblank = 1;
 
 	ret = device_create_file(&lcd->ld->dev, &dev_attr_power_reduce);
 	if (ret < 0)
@@ -1465,6 +1673,10 @@ static int s6e3ha1_probe(struct mipi_dsim_device *dsim)
 	if (ret < 0)
 		dev_err(&lcd->ld->dev, "failed to add sysfs entries, %d\n", __LINE__);
 
+	ret = s6e3ha1_register_fb(lcd);
+	if (ret)
+		dev_err(&lcd->ld->dev, "failed to register fb notifier chain\n");
+
 	mutex_init(&lcd->lock);
 	mutex_init(&lcd->bl_lock);
 
@@ -1477,6 +1689,8 @@ static int s6e3ha1_probe(struct mipi_dsim_device *dsim)
 	s6e3ha1_write(lcd, SEQ_TEST_KEY_OFF_F0, ARRAY_SIZE(SEQ_TEST_KEY_OFF_F0));
 
 	dev_info(&lcd->ld->dev, "ID: %x, %x, %x\n", lcd->id[0], lcd->id[1], lcd->id[2]);
+
+	s6e3ha1_update_seq(lcd);
 
 	init_tset_table(lcd);
 	ret = init_backlight_level_from_brightness(lcd);
@@ -1496,6 +1710,8 @@ static int s6e3ha1_probe(struct mipi_dsim_device *dsim)
 	show_lcd_table(lcd);
 
 	lcd->ldi_enable = 1;
+
+	s6e3ha1_init_irq(lcd);
 
 	update_brightness(lcd, 1);
 

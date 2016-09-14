@@ -730,7 +730,7 @@ static int hub_port_disable(struct usb_hub *hub, int port1, int set_state)
  */
 static void hub_port_logical_disconnect(struct usb_hub *hub, int port1)
 {
-	dev_dbg(hub->intfdev, "logical disconnect on port %d\n", port1);
+	dev_err(hub->intfdev, "logical disconnect on port %d\n", port1);
 	hub_port_disable(hub, port1, 1);
 
 	/* FIXME let caller ask to power down the port:
@@ -972,7 +972,7 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
 	 * If any port-status changes do occur during this delay, khubd
 	 * will see them later and handle them normally.
 	 */
-#if defined(CONFIG_LINK_DEVICE_HSIC)
+#if defined(CONFIG_LINK_DEVICE_HSIC) || defined(CONFIG_MDM_HSIC_PM)
 	if (need_debounce_delay && type != HUB_RESET_RESUME) {
 #else
 	if (need_debounce_delay) {
@@ -1752,9 +1752,6 @@ void usb_disconnect(struct usb_device **pdev)
 	dev_info(&udev->dev, "USB disconnect, device number %d\n",
 			udev->devnum);
 
-#ifdef CONFIG_USB_HOST_NOTIFY
-	call_battery_notify(udev, 0);
-#endif
 	usb_lock_device(udev);
 
 	/* Free up all the children before we remove this device */
@@ -1762,7 +1759,9 @@ void usb_disconnect(struct usb_device **pdev)
 		if (udev->children[i])
 			usb_disconnect(&udev->children[i]);
 	}
-
+#ifdef CONFIG_USB_HOST_NOTIFY
+	call_battery_notify(udev, 0);
+#endif
 	/* deallocate hcd/hardware state ... nuking all pending urbs and
 	 * cleaning up all state associated with the current configuration
 	 * so that the hardware is now fully quiesced.
@@ -2037,12 +2036,6 @@ int usb_new_device(struct usb_device *udev)
 	if (udev->manufacturer)
 		add_device_randomness(udev->manufacturer,
 				      strlen(udev->manufacturer));
-#ifdef CONFIG_USB_HOST_NOTIFY
-#if defined(CONFIG_MUIC_MAX77693_SUPPORT_OTG_AUDIO_DOCK)
-	call_audiodock_notify(udev);
-#endif
-	call_battery_notify(udev, 1);
-#endif
 	device_enable_async_suspend(&udev->dev);
 
 	/*
@@ -2066,6 +2059,9 @@ int usb_new_device(struct usb_device *udev)
 	(void) usb_create_ep_devs(&udev->dev, &udev->ep0, udev);
 	usb_mark_last_busy(udev);
 	pm_runtime_put_sync_autosuspend(&udev->dev);
+#ifdef CONFIG_USB_HOST_NOTIFY
+	call_battery_notify(udev, 1);
+#endif
 	return err;
 
 fail:
@@ -2801,7 +2797,7 @@ int usb_port_resume(struct usb_device *udev, pm_message_t msg)
 		/* drive resume for at least 20 msec */
 		dev_dbg(&udev->dev, "usb %sresume\n",
 				(PMSG_IS_AUTO(msg) ? "auto-" : ""));
-		msleep(25);
+		msleep(30);
 
 		/* Virtual root hubs can trigger on GET_PORT_STATUS to
 		 * stop resume signaling.  Then finish the resume
@@ -2811,6 +2807,15 @@ int usb_port_resume(struct usb_device *udev, pm_message_t msg)
 
 		/* TRSMRCY = 10 msec */
 		msleep(10);
+
+		if(udev->quirks & USB_QUIRK_HSIC_TUNE) {
+			/* If portstatus's still resuming, retry GET_PORT_STATUS */
+			if (portstatus & USB_PORT_STAT_SUSPEND) {
+				usleep_range(5000, 10000);
+				status = hub_port_status(hub, port1,
+						&portstatus, &portchange);
+			}
+		}
 	}
 
  SuspendCleared:
@@ -3194,6 +3199,7 @@ hub_port_init (struct usb_hub *hub, struct usb_device *udev, int port1,
 	 * first 8 bytes of the device descriptor to get the ep0 maxpacket
 	 * value.
 	 */
+
 	for (i = 0; i < GET_DESCRIPTOR_TRIES; (++i, msleep(100))) {
 		if (USE_NEW_SCHEME(retry_counter) && !(hcd->driver->flags & HCD_USB3)) {
 			struct usb_device_descriptor *buf;
@@ -3237,9 +3243,15 @@ hub_port_init (struct usb_hub *hub, struct usb_device *udev, int port1,
 					buf->bMaxPacketSize0;
 			kfree(buf);
 
-			retval = hub_port_reset(hub, port1, udev, delay, false);
-			if (retval < 0)		/* error or disconnect */
-				goto fail;
+#if defined(CONFIG_MDM_HSIC_PM) || defined(CONFIG_LINK_DEVICE_HSIC)
+			if(!(udev->quirks & USB_QUIRK_HSIC_TUNE)) {
+#endif
+				retval = hub_port_reset(hub, port1, udev, delay, false);
+				if (retval < 0)		/* error or disconnect */
+					goto fail;
+#if defined(CONFIG_MDM_HSIC_PM) || defined(CONFIG_LINK_DEVICE_HSIC)
+			}
+#endif
 			if (oldspeed != udev->speed) {
 				dev_dbg(&udev->dev,
 					"device reset changed speed!\n");

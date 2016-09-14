@@ -140,6 +140,11 @@ static struct mdnie_table *mdnie_find_table(struct mdnie_info *mdnie)
 		table = &accessibility_table[mdnie->accessibility];
 		goto exit;
 	} else if (IS_HBM(mdnie->auto_brightness)) {
+#if defined(CONFIG_LCD_MIPI_S6E3HA1) || defined(CONFIG_LCD_MIPI_S6TNMR7)
+		if((mdnie->scenario == BROWSER_MODE)|| (mdnie->scenario == EBOOK_MODE))
+			table = &hbm_table[HBM_ON_TEXT];
+		else
+#endif
 		table = &hbm_table[mdnie->hbm];
 		goto exit;
 #if defined(CONFIG_TDMB)
@@ -547,7 +552,13 @@ static ssize_t auto_brightness_store(struct device *dev,
 	dev_info(dev, "%s: value=%d\n", __func__, value);
 
 	mutex_lock(&mdnie->lock);
-	mdnie->hbm = IS_HBM(value) ? HBM_ON : HBM_OFF;
+	ret = IS_HBM(value) ? HBM_ON : HBM_OFF;
+	if(mdnie->hbm == ret) {
+		mutex_unlock(&mdnie->lock);
+		return count;
+	}
+
+	mdnie->hbm = ret;
 	mdnie->auto_brightness = value;
 	mutex_unlock(&mdnie->lock);
 
@@ -773,7 +784,7 @@ struct mdnie_device *mdnie_device_register(const char *name,
 
 	mdnie->dev = &new_md->dev;
 	mdnie->scenario = UI_MODE;
-	mdnie->mode = STANDARD;
+	mdnie->mode = AUTO;
 	mdnie->enable = 0;
 	mdnie->tuning = 0;
 	mdnie->accessibility = ACCESSIBILITY_OFF;

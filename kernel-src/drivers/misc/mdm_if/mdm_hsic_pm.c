@@ -30,7 +30,6 @@
 #include <mach/subsystem_restart.h>
 #include <linux/msm_charm.h>
 #include "mdm_private.h"
-#include <linux/wakelock.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 #include <linux/usb/ehci_def.h>
@@ -50,6 +49,8 @@
 #define EXTERNAL_MODEM "external_modem"
 #undef EHCI_REG_DUMP
 #define DEFAULT_RAW_WAKE_TIME (0*HZ)
+
+#define HOST_READY_RETRY_CNT 2
 
 BLOCKING_NOTIFIER_HEAD(mdm_reset_notifier_list);
 
@@ -106,6 +107,7 @@ struct mdm_hsic_pm_data {
 	int gpio_device_ready;
 	int gpio_host_wake;
 	int irq;
+	int dev_rdy_irq;
 
 	/* wakelock for L0 - L2 */
 	struct wake_lock l2_wake;
@@ -508,7 +510,7 @@ void set_host_stat(enum pwr_stat status)
 	}
 }
 
-#define DEV_POWER_WAIT_SPIN	10
+#define DEV_POWER_WAIT_SPIN	100
 #define DEV_POWER_WAIT_MS	10
 int wait_dev_pwr_stat(enum pwr_stat status)
 {
@@ -541,6 +543,10 @@ int wait_dev_pwr_stat(enum pwr_stat status)
 		pr_info(" done\n");
 	else {
 		//subsystem_restart(EXTERNAL_MODEM);
+		pr_info("%s: host ready val : %08X\n", __func__,
+				gpio_get_value(pm_data->gpio_host_ready));
+		pr_info("%s: dev  ready val : %08X\n", __func__,
+				gpio_get_value(pm_data->gpio_device_ready));
 		return -ETIMEDOUT;
 	}
 	return 0;
@@ -552,6 +558,7 @@ static int mdm_hsic_pm_phy_notify(struct notifier_block *nfb,
 	struct mdm_hsic_pm_data *pm_data =
 				get_pm_data_by_dev_name("mdm_hsic_pm0");
 	int ret = 0;
+	int fail_cnt = 0;
 
 	/* in shutdown(including modem fatal) do not need to wait dev ready */
 	if (pm_data->shutdown)
@@ -559,17 +566,32 @@ static int mdm_hsic_pm_phy_notify(struct notifier_block *nfb,
 
 	switch (event) {
 	case STATE_HSIC_RESUME:
-		set_host_stat(POWER_ON);
-		ret = wait_dev_pwr_stat(POWER_ON);
+		while (fail_cnt++ < HOST_READY_RETRY_CNT) {
+			set_host_stat(POWER_ON);
+			ret = wait_dev_pwr_stat(POWER_ON);
+			if (ret) {
+				set_host_stat(POWER_OFF);
+				continue;
+			} else {
+				fail_cnt = 0;
+				break;
+			}
+		}
 		break;
 	case STATE_HSIC_SUSPEND:
 	case STATE_HSIC_LPA_ENTER:
-		set_host_stat(POWER_OFF);
-		ret = wait_dev_pwr_stat(POWER_OFF);
-		if (ret) {
-			set_host_stat(POWER_ON);
-			/* pm_runtime_resume(pm_data->udev->dev.parent->parent); */
-			return ret;
+		while (fail_cnt++ < HOST_READY_RETRY_CNT) {
+			set_host_stat(POWER_OFF);
+			ret = wait_dev_pwr_stat(POWER_OFF);
+			if (ret) {
+				set_host_stat(POWER_ON);
+				continue;
+				/* pm_runtime_resume(pm_data->udev->dev.parent->parent); */
+				//return ret;
+			} else {
+				fail_cnt = 0;
+				break;
+			}
 		}
 		break;
 	case STATE_HSIC_LPA_WAKE:
@@ -986,6 +1008,16 @@ static int mdm_hsic_pm_notify_event(struct notifier_block *this,
 	return NOTIFY_DONE;
 }
 
+static irqreturn_t mdm_device_ready_irq_handler(int irq, void *data)
+{
+	struct mdm_hsic_pm_data *pm_data = data;
+
+	pr_info("%s: host ready val : %08X\n", __func__, gpio_get_value(pm_data->gpio_host_ready));
+	pr_info("%s: dev  ready val : %08X\n", __func__, gpio_get_value(pm_data->gpio_device_ready));
+
+	return IRQ_HANDLED;
+}
+
 #define HSIC_RESUME_TRIGGER_LEVEL	1
 static irqreturn_t mdm_hsic_irq_handler(int irq, void *data)
 {
@@ -1190,6 +1222,14 @@ static int mdm_hsic_pm_gpio_init(struct mdm_hsic_pm_data *pm_data,
 	} else
 		return -ENXIO;
 
+	if (pm_data->gpio_device_ready)
+		pm_data->dev_rdy_irq = gpio_to_irq(pm_data->gpio_device_ready);
+
+	if (!pm_data->dev_rdy_irq) {
+		pr_err("fail to get dev rdy irq\n");
+		return -ENXIO;
+	}
+
 	/* host wake gpio */
 	res = platform_get_resource_byname(pdev, IORESOURCE_IO,
 					"MDM2AP_RESUME_REQ");
@@ -1334,6 +1374,14 @@ static int mdm_hsic_pm_probe(struct platform_device *pdev)
 	if (ret < 0) {
 		pr_err("%s: fail to set wake irq(%d)\n", __func__, ret);
 		goto err_set_wake_irq;
+	}
+
+	ret = request_irq(pm_data->dev_rdy_irq, mdm_device_ready_irq_handler,
+		IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING | IRQF_DISABLED,
+		"mdm_device_ready", (void *)pm_data);
+	if (ret < 0) {
+		pr_err("%s: fail to request irq(%d)\n", __func__, ret);
+		goto err_request_irq;
 	}
 
 	pm_data->wq = create_singlethread_workqueue("hsicrpmd");

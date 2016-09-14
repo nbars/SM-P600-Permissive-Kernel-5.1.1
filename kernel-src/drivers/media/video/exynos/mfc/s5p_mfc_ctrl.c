@@ -116,7 +116,6 @@ int s5p_mfc_alloc_firmware(struct s5p_mfc_dev *dev)
 		return -EIO;
 	}
 
-	if (!dev->num_drm_inst) {
 		s5p_mfc_bitproc_virt =
 				s5p_mfc_mem_vaddr_priv(s5p_mfc_bitproc_buf);
 		mfc_debug(2, "Virtual address for FW: %08lx\n",
@@ -128,7 +127,6 @@ int s5p_mfc_alloc_firmware(struct s5p_mfc_dev *dev)
 			s5p_mfc_bitproc_buf = 0;
 			return -EIO;
 		}
-	}
 
 	dev->port_a = s5p_mfc_bitproc_phys;
 
@@ -211,6 +209,12 @@ int s5p_mfc_load_firmware(struct s5p_mfc_dev *dev)
 	*/
 	s5p_mfc_mem_clean_priv(s5p_mfc_bitproc_buf, s5p_mfc_bitproc_virt, 0,
 			fw_blob->size);
+
+	dev->fw.dva = s5p_mfc_bitproc_phys;
+	dev->fw.kva = s5p_mfc_bitproc_virt;
+	dev->fw.ctx = s5p_mfc_bitproc_buf;
+	dev->fw.size = fw_blob->size;
+
 	release_firmware(fw_blob);
 	mfc_debug_leave();
 	return 0;
@@ -378,7 +382,11 @@ int s5p_mfc_init_hw(struct s5p_mfc_dev *dev)
 	/* 0. MFC reset */
 	mfc_info("MFC reset...\n");
 
-	s5p_mfc_clock_on();
+	ret = s5p_mfc_clock_on();
+	if (ret) {
+		mfc_err("Failed to enable clock before reset(%d)\n", ret);
+		return ret;
+	}
 
 	ret = s5p_mfc_reset(dev);
 	if (ret) {
@@ -425,6 +433,7 @@ int s5p_mfc_init_hw(struct s5p_mfc_dev *dev)
 			mfc_err("Finally failed to load.\n");
 			s5p_mfc_clean_dev_int_flags(dev);
 			ret = -EIO;
+			dev->skip_bus_waiting = 1;
 			goto err_init_hw;
 		}
 	}
@@ -481,6 +490,10 @@ err_init_hw:
 	s5p_mfc_clock_off();
 	if (ret != 0)
 		mfc_err("Init h/w is failed\n");
+
+	if (dev->skip_bus_waiting)
+		dev->skip_bus_waiting = 0;
+
 	mfc_debug_leave();
 
 	return ret;
@@ -533,9 +546,9 @@ int s5p_mfc_sleep(struct s5p_mfc_dev *dev)
 		return ret;
 	}
 
-	spin_lock(&dev->condlock);
+	spin_lock_irq(&dev->condlock);
 	set_bit(ctx->num, &dev->hw_lock);
-	spin_unlock(&dev->condlock);
+	spin_unlock_irq(&dev->condlock);
 
 	s5p_mfc_clock_on();
 	s5p_mfc_clean_dev_int_flags(dev);
@@ -577,6 +590,9 @@ int s5p_mfc_wakeup(struct s5p_mfc_dev *dev)
 		mfc_err("no mfc device to run\n");
 		return -EINVAL;
 	}
+
+	/* Set clock source again after wake up */
+	s5p_mfc_set_clock_parent(dev);
 
 	/* 0. MFC reset */
 	mfc_debug(2, "MFC reset...\n");

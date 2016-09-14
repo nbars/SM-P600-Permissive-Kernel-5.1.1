@@ -45,6 +45,8 @@
 #define SELFTEST_LIMITATION_OF_ERROR       5250
 
 #define BMG160_DEFAULT_DELAY               200000000LL
+#define BMG160_MIN_DELAY                   5000000LL
+
 #define	BMG160_CHIP_ID                     0x0F
 
 struct bmg160_v {
@@ -69,11 +71,14 @@ struct bmg160_p {
 	struct workqueue_struct *gyro_wq;
 	ktime_t poll_delay;
 	atomic_t enable;
+	u64 timestamp;
 
 	int chip_pos;
 	int gyro_dps;
 	int gyro_int;
 	int gyro_drdy;
+
+	u64 old_timestamp;
 };
 
 static int bmg160_open_calibration(struct bmg160_p *);
@@ -404,12 +409,7 @@ static int bmg160_read_gyro_xyz(struct bmg160_p *data, struct bmg160_v *gyro)
 	temp[4] = BMG160_GET_BITSLICE(temp[4], BMG160_RATE_Z_LSB_VALUEZ);
 	gyro->z = (short)((((short)((signed char)temp[5])) << 8) | (temp[4]));
 
-#if defined(CONFIG_SENSORS_BMI_DUALIZATION)
-	get_dual_position(&i);
-	remap_sensor_data(gyro->v, data->chip_pos, i);
-#else
 	remap_sensor_data(gyro->v, data->chip_pos);
-#endif
 
 	if (data->gyro_dps == BMG160_RANGE_250DPS) {
 		gyro->x = gyro->x >> 1;
@@ -442,20 +442,56 @@ static void bmg160_work_func(struct work_struct *work)
 	int ret;
 	struct bmg160_v gyro;
 	struct bmg160_p *data = container_of(work, struct bmg160_p, work);
+	struct timespec ts;
+	int time_hi, time_lo;
+	u64 delay = ktime_to_ns(data->poll_delay);
+
+	ts = ktime_to_timespec(ktime_get_boottime());
+	data->timestamp = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+    //time_lo = (int)(data->timestamp & TIME_LO_MASK);
+    //time_hi = (int)((data->timestamp & TIME_HI_MASK) >> TIME_HI_SHIFT);
 
 	ret = bmg160_read_gyro_xyz(data, &gyro);
 	if (ret < 0)
 		return;
 
+	if (data->old_timestamp != 0 &&
+	   ((data->timestamp - data->old_timestamp) > ktime_to_ms(data->poll_delay) * 1800000LL)) {
+
+		u64 shift_timestamp = delay >> 1;
+		u64 timestamp = 0ULL;
+		u64 diff = 0ULL;
+
+		for (timestamp = data->old_timestamp + delay; timestamp < data->timestamp - shift_timestamp; timestamp+=delay) {
+				time_hi = (int)((timestamp & TIME_HI_MASK) >> TIME_HI_SHIFT);
+				time_lo = (int)(timestamp & TIME_LO_MASK);
+
+				input_report_rel(data->input, REL_RX, gyro.x - data->caldata.x);
+				input_report_rel(data->input, REL_RY, gyro.y - data->caldata.y);
+				input_report_rel(data->input, REL_RZ, gyro.z - data->caldata.z);
+				input_report_rel(data->input, REL_X, time_hi);
+				input_report_rel(data->input, REL_Y, time_lo);
+				input_sync(data->input);
+				data->gyrodata = gyro;
+		}
+	}
+
+	time_hi = (int)((data->timestamp & TIME_HI_MASK) >> TIME_HI_SHIFT);
+	time_lo = (int)(data->timestamp & TIME_LO_MASK);
+
 	input_report_rel(data->input, REL_RX, gyro.x - data->caldata.x);
 	input_report_rel(data->input, REL_RY, gyro.y - data->caldata.y);
 	input_report_rel(data->input, REL_RZ, gyro.z - data->caldata.z);
+	input_report_rel(data->input, REL_X, time_hi);
+	input_report_rel(data->input, REL_Y, time_lo);
 	input_sync(data->input);
 	data->gyrodata = gyro;
+	data->old_timestamp = data->timestamp;
 }
 
 static void bmg160_set_enable(struct bmg160_p *data, int enable)
 {
+	data->old_timestamp = 0LL;
 	if (enable == ON) {
 		hrtimer_start(&data->gyro_timer, data->poll_delay,
 		      HRTIMER_MODE_REL);
@@ -493,6 +529,7 @@ static ssize_t bmg160_enable_store(struct device *dev,
 		if (pre_enable == OFF) {
 			bmg160_open_calibration(data);
 			bmg160_set_mode(data, BMG160_MODE_NORMAL);
+			usleep_range(30000, 31000);
 			atomic_set(&data->enable, ON);
 			bmg160_set_enable(data, ON);
 		}
@@ -526,8 +563,15 @@ static ssize_t bmg160_delay_store(struct device *dev,
 	ret = kstrtoll(buf, 10, &delay);
 	if (ret) {
 		pr_err("[SENSOR]: %s - Invalid Argument\n", __func__);
-		return ret;
+		goto exit;
+	} else if (ktime_to_ns(data->poll_delay) == delay) {
+		goto exit;
 	}
+
+	if(delay > BMG160_DEFAULT_DELAY)
+		delay = BMG160_DEFAULT_DELAY;
+	else if(delay < BMG160_MIN_DELAY)
+		delay = BMG160_MIN_DELAY;
 
 	if (delay <= 5000000LL)
 		bmg160_set_bw(data, BMG160_BW_116Hz);
@@ -543,7 +587,7 @@ static ssize_t bmg160_delay_store(struct device *dev,
 		bmg160_set_mode(data, BMG160_MODE_NORMAL);
 		bmg160_set_enable(data, ON);
 	}
-
+exit:
 	return size;
 }
 
@@ -829,7 +873,7 @@ static unsigned char bmg160_selftest(struct bmg160_p *data)
 
 	pr_info("[SENSOR]: %s - rate %u, bist %u\n", __func__, rateok, bist);
 
-	return (rateok && bist);
+	return rateok && bist;
 }
 
 static int bmg160_selftest_show(struct device *dev,
@@ -941,7 +985,7 @@ static void bmg160_setup_pin(struct bmg160_p *data)
 	} else {
 		ret = gpio_direction_input(data->gyro_int);
 		if (ret < 0)
-			pr_err("[SENSOR]: %s - failed to set gpio %d as input"
+			pr_err("[SENSOR]: %s - failed to set gpio %d as input"\
 				" (%d)\n", __func__, data->gyro_int, ret);
 		gpio_free(data->gyro_int);
 	}
@@ -953,7 +997,7 @@ static void bmg160_setup_pin(struct bmg160_p *data)
 	} else {
 		ret = gpio_direction_input(data->gyro_drdy);
 		if (ret < 0)
-			pr_err("[SENSOR]: %s - failed to set gpio %d as input"
+			pr_err("[SENSOR]: %s - failed to set gpio %d as input"\
 				" (%d)\n", __func__, data->gyro_drdy, ret);
 		gpio_free(data->gyro_drdy);
 	}
@@ -974,6 +1018,8 @@ static int bmg160_input_init(struct bmg160_p *data)
 	input_set_capability(dev, EV_REL, REL_RX);
 	input_set_capability(dev, EV_REL, REL_RY);
 	input_set_capability(dev, EV_REL, REL_RZ);
+	input_set_capability(dev, EV_REL, REL_X); /* time_hi */
+	input_set_capability(dev, EV_REL, REL_Y); /* time_lo */
 
 	input_set_drvdata(dev, data);
 
@@ -1004,10 +1050,8 @@ static int bmg160_input_init(struct bmg160_p *data)
 static int bmg160_parse_dt(struct bmg160_p *data,
 	struct bmg160_platform_data *pdata)
 {
-	if (pdata == NULL) {
-		data->chip_pos = BMG160_TOP_LOWER_RIGHT;
+	if (pdata == NULL)
 		return -ENODEV;
-	}
 
 	if (pdata->get_pos != NULL)
 		pdata->get_pos(&data->chip_pos);
@@ -1049,14 +1093,18 @@ static int bmg160_probe(struct i2c_client *client,
 		goto exit_kzalloc;
 	}
 
-	bmg160_parse_dt(data, client->dev.platform_data);
+	ret = bmg160_parse_dt(data, client->dev.platform_data);
+	if (ret < 0) {
+		pr_err("[SENSOR]: %s - of_node error\n", __func__);
+		goto exit_of_node;
+	}
+
 	bmg160_setup_pin(data);
 
 	i2c_set_clientdata(client, data);
 	data->client = client;
 
 	/* read chip id */
-	bmg160_set_mode(data, BMG160_MODE_NORMAL);
 	ret = i2c_smbus_read_word_data(data->client, BMG160_CHIP_ID_REG);
 	if ((ret & 0x00ff) != BMG160_CHIP_ID) {
 		pr_err("[SENSOR]: %s - chip id failed 0x%x\n",
@@ -1105,6 +1153,7 @@ exit_create_workqueue:
 	input_unregister_device(data->input);
 exit_input_init:
 exit_read_chipid:
+exit_of_node:
 	kfree(data);
 exit_kzalloc:
 exit:

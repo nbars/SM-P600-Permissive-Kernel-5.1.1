@@ -53,6 +53,7 @@ enum ACCESSIBILITY {
 	ACCESSIBILITY_OFF,
 	NEGATIVE,
 	COLOR_BLIND,
+	SCREEN_CURTAIN,
 	ACCESSIBILITY_MAX,
 };
 
@@ -98,6 +99,8 @@ struct mdnie_info {
 	unsigned int scr_white_blue;
 	struct mdnie_tuning_info table_buffer;
 	unsigned short sequence_buffer[512];
+
+	struct platform_mdnie_data *pd;
 };
 
 extern struct mdnie_info *g_mdnie;

@@ -23,14 +23,17 @@
 #include <plat/gpio-cfg.h>
 #include <plat/regs-fb-v4.h>
 #include <plat/mipi_dsi.h>
+#include <plat/regs-mipidsim.h>
 #include <mach/map.h>
 #include <asm/system_info.h>
+#include <linux/irq.h>
 
 
 #define GPIO_MLCD_RST		EXYNOS5420_GPG1(2)
 /* #define GPIO_PSR_TE		EXYNOS5420_GPJ4(0) */
+//#define GPIO_ERR_FG		EXYNOS5420_GPG1(5)
 
-static int tcon_irq = -EINVAL;
+static int err_fg_irq = -EINVAL;
 
 unsigned int lcdtype;
 EXPORT_SYMBOL(lcdtype);
@@ -94,11 +97,9 @@ static int lcd_power_on(struct lcd_device *ld, int enable)
 
 	regulator_17 = regulator_get(NULL, "vci_3.0v");
 	regulator_28 = regulator_get(NULL, "vdd3_1.8v");
-	regulator_29 = regulator_get(NULL, "vddr_1.8v");
+	regulator_29 = regulator_get(NULL, "vddr_1.6v");
 
 	if (enable) {
-		gpio_request_one(GPIO_MLCD_RST, GPIOF_OUT_INIT_HIGH, "GPG1");
-		msleep(1);
 		regulator_enable(regulator_28);
 		regulator_enable(regulator_17);
 		usleep_range(5000, 6000);
@@ -110,8 +111,8 @@ static int lcd_power_on(struct lcd_device *ld, int enable)
 		regulator_disable(regulator_17);
 		regulator_disable(regulator_28);
 		gpio_request_one(GPIO_MLCD_RST, GPIOF_OUT_INIT_LOW, "GPG1");
+		gpio_free(GPIO_MLCD_RST);
 	}
-	gpio_free(GPIO_MLCD_RST);
 	regulator_put(regulator_17);
 	regulator_put(regulator_28);
 	regulator_put(regulator_29);
@@ -125,21 +126,21 @@ static int lcd_reset(struct lcd_device *ld)
 	pr_debug(" Klimt %s\n", __func__);
 
 	gpio_request_one(GPIO_MLCD_RST, GPIOF_OUT_INIT_HIGH, "GPG1");
-
+	usleep_range(1000, 2000);
 	gpio_set_value(GPIO_MLCD_RST, 0);
 	usleep_range(1000, 2000);
 	gpio_set_value(GPIO_MLCD_RST, 1);
-	usleep_range(1000, 2000);
+	usleep_range(10000, 15000);
 
 	gpio_free(GPIO_MLCD_RST);
 
 	return 0;
 }
 
-static struct lcd_platform_data s6tnmr7_platform_data = {
+static struct lcd_platform_data s6e3ha1_platform_data = {
 	.power_on = lcd_power_on,
 	.reset = lcd_reset,
-	.pdata = &tcon_irq
+	.pdata = &err_fg_irq
 };
 
 #define SMDK5420_HBP 10
@@ -192,10 +193,8 @@ static struct s3c_fb_platdata klimt_lcd1_pdata __initdata = {
 	.dsim_clk_on	= s5p_mipi_dsi_clk_enable_by_fimd,
 	.dsim_clk_off	= s5p_mipi_dsi_clk_disable_by_fimd,
 	.dsim1_device   = &s5p_device_mipi_dsim1.dev,
-#if 0
 #ifdef CONFIG_FB_HW_TRIGGER
 	.dsim_get_state = lcd_get_mipi_state,
-#endif
 #endif
 };
 
@@ -223,7 +222,7 @@ static struct mipi_dsim_lcd_config dsim_lcd_info = {
 	.cpu_timing.wr_setup		= 0,
 	.cpu_timing.wr_act		= 1,
 	.cpu_timing.wr_hold		= 0,
-	.mipi_ddi_pd			= &s6tnmr7_platform_data,
+	.mipi_ddi_pd			= &s6e3ha1_platform_data,
 };
 
 static struct mipi_dsim_config dsim_info = {
@@ -247,7 +246,7 @@ static struct mipi_dsim_config dsim_info = {
 	.s = 0,
 
 	/* D-PHY PLL stable time spec :min = 200usec ~ max 400usec */
-	.pll_stable_time = 22200,
+	.pll_stable_time = DPHY_PLL_STABLE_TIME,
 
 	.esc_clk = 16 * MHZ, /* escape clk : 8MHz */
 
@@ -265,21 +264,10 @@ static struct s5p_platform_mipi_dsim dsim_platform_data = {
 	.dsim_lcd_config	= &dsim_lcd_info,
 
 	.mipi_power		= NULL,
-	.part_reset		= NULL,
 	.init_d_phy		= s5p_dsim_init_d_phy,
 	.get_fb_frame_done	= NULL,
 	.trigger		= NULL,
 
-	/*
-	 * The stable time of needing to write data on SFR
-	 * when the mipi mode becomes LP mode.
-	 */
-	.delay_for_stabilization = 600,
-
-#if defined(CONFIG_FB_HW_TRIGGER)
-	.trigger_set = s3c_fb_enable_trigger_forcing,
-	.fimd1_device = &s5p_device_fimd1.dev,
-#endif
 };
 
 
@@ -335,13 +323,13 @@ void __init exynos5_universal5420_display_init(void)
 	struct clk *mout_mdnie1;
 	struct clk *mout_mpll;
 
-#if 0
-	/* GPIO CONFIG */
-	gpio_request(GPIO_TCON_INTR, "TCON_INTR");
-	s3c_gpio_setpull(GPIO_TCON_INTR, S3C_GPIO_PULL_DOWN);
-	s5p_register_gpio_interrupt(GPIO_TCON_INTR);
-	tcon_irq = gpio_to_irq(GPIO_TCON_INTR);
-#endif
+	gpio_request(GPIO_ERR_FG, "ERR_FG");
+	s3c_gpio_setpull(GPIO_ERR_FG, S3C_GPIO_PULL_DOWN);
+	s5p_register_gpio_interrupt(GPIO_ERR_FG);
+	err_fg_irq = gpio_to_irq(GPIO_ERR_FG);
+	irq_set_irq_type(err_fg_irq, IRQF_TRIGGER_RISING);
+	s3c_gpio_cfgpin(GPIO_ERR_FG, S3C_GPIO_SFN(0xF));
+
 
 #if defined(CONFIG_FB_HW_TRIGGER)
 	gpio_request(GPIO_PSR_TE, "PSR_TE");

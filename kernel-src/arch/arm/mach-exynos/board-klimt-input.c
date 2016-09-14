@@ -76,8 +76,9 @@ static int synaptics_power(void *data, bool on)
 	}
 
 	if (on) {
-		regulator_enable(regulator_vdd);
 		regulator_enable(regulator_avdd);
+		regulator_enable(regulator_vdd);
+		gpio_direction_output(GPIO_TSP_RST, 1);
 
 		s3c_gpio_cfgpin(DSX_ATTN_GPIO, S3C_GPIO_SFN(0xf));
 		s3c_gpio_setpull(DSX_ATTN_GPIO, S3C_GPIO_PULL_NONE);
@@ -88,6 +89,7 @@ static int synaptics_power(void *data, bool on)
 		 */
 		if (regulator_is_enabled(regulator_vdd))
 			regulator_disable(regulator_vdd);
+		gpio_direction_output(GPIO_TSP_RST, 0);
 		if (regulator_is_enabled(regulator_avdd))
 			regulator_disable(regulator_avdd);
 
@@ -95,8 +97,8 @@ static int synaptics_power(void *data, bool on)
 		s3c_gpio_setpull(DSX_ATTN_GPIO, S3C_GPIO_PULL_NONE);
 	}
 
-	regulator_put(regulator_vdd);
 	regulator_put(regulator_avdd);
+	regulator_put(regulator_vdd);
 
 	enabled = on;
 
@@ -168,7 +170,7 @@ static int ts_led_power_on(bool on)
 
 static struct synaptics_rmi4_platform_data dsx_platformdata = {
 	.sensor_max_x = 1599,
-	.sensor_max_y = 2599,
+	.sensor_max_y = 2559,
 	.num_of_rx = NUM_OF_RX,
 	.num_of_tx = NUM_OF_TX,
 	.max_touch_width = 28,
@@ -204,6 +206,8 @@ static void synaptics_dsx_gpio_init(void)
 
 	s5p_gpio_set_pd_cfg(DSX_ATTN_GPIO, S5P_GPIO_PD_PREV_STATE);
 	s5p_gpio_set_pd_pull(DSX_ATTN_GPIO, S5P_GPIO_PD_UPDOWN_DISABLE);
+
+	gpio_request(GPIO_TSP_RST, "TSP_RST");
 }
 
 void __init synaptics_dsx_tsp_init(void)
@@ -212,6 +216,11 @@ void __init synaptics_dsx_tsp_init(void)
 
 	if (lpcharge) {
 		printk(KERN_DEBUG "%s : lpcharge. tsp driver unload\n", __func__);
+		return;
+	}
+
+	if (lcdtype == 0) {
+		printk(KERN_ERR "%s lcdtype 0. tsp driver unload\n", __func__);
 		return;
 	}
 
@@ -349,6 +358,16 @@ void __init mxt_tsp_init(void)
 {
 	mxt_gpio_init();
 
+	if (lpcharge) {
+		printk(KERN_DEBUG "%s : lpcharge. tsp driver unload\n", __func__);
+		return;
+	}
+
+	if (lcdtype == 0) {
+		printk(KERN_ERR "%s lcdtype 0. tsp driver unload\n", __func__);
+		return;
+	}
+
 	mxt_i2c_devs[0].irq = gpio_to_irq(GPIO_TSP_INT);
 
 	s3c_i2c0_set_platdata(NULL);
@@ -366,6 +385,20 @@ void __init mxt_tsp_init(void)
 #define GPIO_TOUCH_SCL EXYNOS5420_GPD1(5)
 static struct i2c_board_info touchkey_i2c_info[];
 
+#ifdef TK_INFORM_CHARGER
+static struct touchkey_callbacks *tk_charger_callbacks;
+
+void touchkey_charger_infom(bool en)
+{
+	if (tk_charger_callbacks && tk_charger_callbacks->inform_charger)
+		tk_charger_callbacks->inform_charger(tk_charger_callbacks, en);
+}
+
+static void touchkey_register_callback(void *cb)
+{
+	tk_charger_callbacks = cb;
+}
+#endif
 static void touchkey_init_hw(void)
 {
 #ifndef LED_LDO_WITH_REGULATOR
@@ -443,13 +476,13 @@ static int touchkey_power_on(bool on)
 	int ret;
 
 	if (on) {
+		ret = touchkey_resume();
+
 		gpio_direction_output(GPIO_TOUCH_INT, 1);
 		irq_set_irq_type(gpio_to_irq(GPIO_TOUCH_INT),
 			IRQF_TRIGGER_FALLING);
 		s3c_gpio_cfgpin(GPIO_TOUCH_INT, S3C_GPIO_SFN(0xf));
 		s3c_gpio_setpull(GPIO_TOUCH_INT, S3C_GPIO_PULL_UP);
-
-		ret = touchkey_resume();
 	} else {
 		gpio_direction_input(GPIO_TOUCH_INT);
 		s3c_gpio_setpull(GPIO_TOUCH_INT, S3C_GPIO_PULL_NONE);
@@ -458,11 +491,14 @@ static int touchkey_power_on(bool on)
 
 	return ret;
 }
-
+static bool touchkey_led_on;
 static int touchkey_led_power_on(bool on)
 {
 #ifdef LED_LDO_WITH_REGULATOR
 	struct regulator *regulator;
+
+	if (touchkey_led_on == on)
+		return 0;
 
 	regulator = regulator_get(NULL, TK_LED_REGULATOR_NAME);
 	if (IS_ERR(regulator)) {
@@ -484,6 +520,8 @@ static int touchkey_led_power_on(bool on)
 	else
 		gpio_direction_output(GPIO_3_TOUCH_EN, 0);
 #endif
+	touchkey_led_on = on;
+
 	return 1;
 }
 
@@ -496,9 +534,13 @@ static struct touchkey_platform_data touchkey_pdata = {
 	.resume = touchkey_resume,
 	.power_on = touchkey_power_on,
 	.led_power_on = touchkey_led_power_on,
+	.led_control_by_ldo = false,
+#ifdef TK_INFORM_CHARGER
+	.register_cb = touchkey_register_callback,
+#endif
 };
 
-static struct i2c_gpio_platform_data gpio_i2c_data8 = {
+static struct i2c_gpio_platform_data gpio_i2c_data12 = {
 	.sda_pin = GPIO_TOUCH_SDA,
 	.scl_pin = GPIO_TOUCH_SCL,
 	.udelay = 1,
@@ -511,10 +553,10 @@ static struct i2c_board_info touchkey_i2c_info[] = {
 	},
 };
 
-struct platform_device s3c_device_i2c8 = {
+struct platform_device s3c_device_i2c12 = {
 	.name = "i2c-gpio",
-	.id = 8,
-	.dev.platform_data = &gpio_i2c_data8,
+	.id = 12,
+	.dev.platform_data = &gpio_i2c_data12,
 };
 #endif /*CONFIG_KEYBOARD_CYPRESS_TOUCH*/
 
@@ -523,9 +565,25 @@ static void touchkey_init(void)
 {
 	printk(KERN_INFO "%s, system_rev : %d\n", __func__, system_rev);
 
+	if (lpcharge) {
+		printk(KERN_DEBUG "%s : lpcharge. touchkey driver unload\n", __func__);
+		return;
+	}
+
+	if (lcdtype == 0) {
+		printk(KERN_ERR "%s lcdtype 0. touchkey driver unload\n", __func__);
+		return;
+	}
+
+	if (system_rev > 7)
+		touchkey_pdata.led_control_by_ldo = true;
+
 	touchkey_init_hw();
-	i2c_register_board_info(8, touchkey_i2c_info,
+	i2c_register_board_info(12, touchkey_i2c_info,
 		ARRAY_SIZE(touchkey_i2c_info));
+
+	s3c_gpio_setpull(GPIO_TOUCH_SCL, S3C_GPIO_PULL_DOWN);
+	s3c_gpio_setpull(GPIO_TOUCH_SDA, S3C_GPIO_PULL_DOWN);
 }
 #endif
 
@@ -659,7 +717,7 @@ static struct platform_device *input_devices[] __initdata = {
 	&s3c_device_i2c0,
 	&gpio_keys,
 #if defined(CONFIG_KEYBOARD_CYPRESS_TOUCH)
-	&s3c_device_i2c8,
+	&s3c_device_i2c12,
 #endif
 	&input_debug,
 #ifdef CONFIG_INPUT_BOOSTER

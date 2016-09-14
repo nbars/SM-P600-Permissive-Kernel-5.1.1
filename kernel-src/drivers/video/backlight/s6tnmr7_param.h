@@ -411,7 +411,7 @@ const int *pelvss_delta = &ELVSS_DELTA;
 
 enum {
 	ACL_STATUS_0P,
-	ACL_STATUS_25P,
+	ACL_STATUS_15P,
 	ACL_STATUS_MAX
 };
 
@@ -420,9 +420,9 @@ static const unsigned char SEQ_ACL_OFF[] = {
 	0x10
 };
 
-static const unsigned char SEQ_ACL_25[] = {
+static const unsigned char SEQ_ACL_15[] = {
 	0xBB,
-	0x11,
+	0x12,
 };
 
 
@@ -439,6 +439,6 @@ static const unsigned char SEQ_ACL_UPDATE[] = {
 
 static const unsigned char *ACL_CUTOFF_TABLE[ACL_STATUS_MAX] = {
 	SEQ_ACL_OFF,
-	SEQ_ACL_25,
+	SEQ_ACL_15,
 };
 #endif /* __S6E3FA0_PARAM_H__ */

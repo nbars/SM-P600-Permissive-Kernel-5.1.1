@@ -22,6 +22,11 @@ struct device *camera_rear_dev; /*sys/class/camera/rear*/
 static struct fimc_is_from_info sysfs_finfo;
 static struct fimc_is_from_info sysfs_pinfo;
 
+bool fimc_is_sec_get_crc_result()
+{
+	return CRC32_CHECK;
+}
+
 int fimc_is_sec_set_force_caldata_dump(bool fcd)
 {
 	force_caldata_dump = fcd;
@@ -527,9 +532,13 @@ crc_retry:
 #endif
 
 	/* CRC check */
-	if (!fimc_is_sec_check_cal_crc32(buf) && (retry > 0)) {
-		retry--;
-		goto crc_retry;
+	if (!fimc_is_sec_check_cal_crc32(buf)) {
+		if (retry <= 0) {
+			err("Cal data has error\n");
+		} else {
+			retry--;
+			goto crc_retry;
+		}
 	}
 
 	if (!isSysfsRead) {
@@ -669,9 +678,13 @@ crc_retry:
 #endif
 
 	/* CRC check */
-	if (!fimc_is_sec_check_cal_crc32(buf) && (retry > 0)) {
-		retry--;
-		goto crc_retry;
+	if (!fimc_is_sec_check_cal_crc32(buf)) {
+		if (retry <= 0) {
+			err("Cal data has error\n");
+		} else {
+			retry--;
+			goto crc_retry;
+		}
 	}
 
 	if (!isSysfsRead) {
@@ -872,6 +885,34 @@ int fimc_is_sec_get_pixel_size(char *header_ver)
 	return pixelsize;
 }
 
+int fimc_is_sec_core_voltage(char *header_ver)
+{
+	int minV, maxV;
+	int pixelSize = 0;
+	pixelSize = fimc_is_sec_get_pixel_size(header_ver);
+
+	if (header_ver[FW_SENSOR_MAKER] == FW_SENSOR_MAKER_SONY) {
+		if (pixelSize == 13) {
+			minV = 1050000;
+			maxV = 1050000;
+		} else if (pixelSize == 8) {
+			minV = 1100000;
+			maxV = 1100000;
+		} else {
+			minV = 1050000;
+			maxV = 1050000;
+		}
+	} else if (header_ver[FW_SENSOR_MAKER] == FW_SENSOR_MAKER_SLSI) {
+		minV = 1200000;
+		maxV = 1200000;
+	} else {
+		minV = 1050000;
+		maxV = 1050000;
+	}
+
+	return minV;
+}
+
 int fimc_is_sec_core_voltage_select(struct device *dev, char *header_ver)
 {
 	struct regulator *regulator = NULL;
@@ -1044,6 +1085,8 @@ int fimc_is_sec_fw_sel(struct device *dev, struct exynos5_platform_fimc_is *pdat
 	bool is_ldo_enabled = false;
 	int pixelSize = 0;
 
+	pr_info("%s : Firmware select. caldata_read(%d), cam_id(%d)\n", __func__, (int)is_caldata_read, cam_id);
+
 	if ((!is_caldata_read || force_caldata_dump) &&
 			(cam_id == CAMERA_SINGLE_REAR || cam_id == CAMERA_DUAL_FRONT)) {
 		is_dumped_fw_loading_needed = false;
@@ -1059,7 +1102,7 @@ int fimc_is_sec_fw_sel(struct device *dev, struct exynos5_platform_fimc_is *pdat
 			is_ldo_enabled = true;
 		}
 
-		if ((fimc_is_sec_readcal(isSysfsRead) != -EIO) &&
+		if ((fimc_is_sec_readcal(isSysfsRead) == 0) &&
 				CRC32_HEADER_CHECK) {
 			if (!isSysfsRead)
 				is_caldata_read = true;
@@ -1137,10 +1180,8 @@ read_phone_fw_exit:
 exit:
 	if (is_ldo_enabled) {
 		ret = fimc_is_sec_ldo_enable(dev, "cam_isp_sensor_io_1.8v", false);
-		if (ret < 0) {
+		if (ret < 0)
 			err("fimc_is_sec_ldo_enable(false) failed!\n");
-			goto exit;
-		}
 	}
 #else
 		if (cam_id == CAMERA_DUAL_FRONT) {
@@ -1182,7 +1223,7 @@ exit:
 		}
 
 		pr_info("read cal data from FROM\n");
-		if ((fimc_is_sec_readcal(isSysfsRead) != -EIO) &&
+		if ((fimc_is_sec_readcal(isSysfsRead) == 0) &&
 				CRC32_HEADER_CHECK) {
 			if (!isSysfsRead)
 				is_caldata_read = true;

@@ -37,9 +37,6 @@
 #include <asm/mmu_context.h>
 
 #include "internal.h"
-#ifdef CONFIG_SDCARD_FS
-#include "../fs/sdcardfs/sdcardfs.h"
-#endif
 
 #ifndef arch_mmap_check
 #define arch_mmap_check(addr, len, flags)	(0)
@@ -966,10 +963,8 @@ static unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,
 	int error;
 	unsigned long reqprot = prot;
 
-#ifdef CONFIG_SDCARD_FS
-	if (file && (file->f_path.mnt->mnt_sb->s_magic == SDCARDFS_SUPER_MAGIC))
-		file = sdcardfs_lower_file(file);
-#endif
+	while (file && (file->f_mode & FMODE_NONMAPPABLE))
+		file = file->f_op->get_lower_file(file);
 
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC?
@@ -2326,7 +2321,8 @@ void exit_mmap(struct mm_struct *mm)
 	while (vma)
 		vma = remove_vma(vma);
 
-	BUG_ON(mm->nr_ptes > (FIRST_USER_ADDRESS+PMD_SIZE-1)>>PMD_SHIFT);
+//	BUG_ON(mm->nr_ptes > (FIRST_USER_ADDRESS+PMD_SIZE-1)>>PMD_SHIFT);
+	WARN_ON(mm->nr_ptes > (FIRST_USER_ADDRESS+PMD_SIZE-1)>>PMD_SHIFT);
 }
 
 /* Insert vm structure into process list sorted by address

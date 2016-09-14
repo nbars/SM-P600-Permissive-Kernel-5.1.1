@@ -168,7 +168,10 @@ static int rmnet_usb_suspend(struct usb_interface *iface, pm_message_t message)
 
 		dev = (struct rmnet_ctrl_dev *)unet->data[1];
 		spin_lock_irq(&unet->txq.lock);
-		if (work_busy(&dev->get_encap_work) || unet->txq.qlen) {
+		/* work_busy logic is not enough to check
+		 * whether or not AP got a data. */
+		if (work_busy(&dev->get_encap_work) || unet->txq.qlen
+				|| !dev->inturb->status) {
 			spin_unlock_irq(&unet->txq.lock);
 			retval = -EBUSY;
 			goto abort_suspend;

@@ -174,12 +174,14 @@ int fimc_is_sec_fw_sel(struct device *dev, struct exynos5_platform_fimc_is *pdat
 int fimc_is_sec_fw_revision(char *fw_ver);
 bool fimc_is_sec_fw_module_compare(char *fw_ver1, char *fw_ver2);
 
+bool fimc_is_sec_get_crc_result(void);
 bool fimc_is_sec_check_fw_crc32(char *buf);
 bool fimc_is_sec_check_cal_crc32(char *buf);
 void fimc_is_sec_make_crc32_table(u32 *table, u32 id);
 
 int fimc_is_sec_gpio_enable(struct exynos5_platform_fimc_is *pdata, char *name, bool on);
 int fimc_is_sec_core_voltage_select(struct device *dev, char *header_ver);
+int fimc_is_sec_core_voltage(char *header_ver);
 int fimc_is_sec_ldo_enable(struct device *dev, char *name, bool on);
 
 int fimc_is_spi_reset(void *buf, u32 rx_addr, size_t size);

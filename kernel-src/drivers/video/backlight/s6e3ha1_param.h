@@ -118,9 +118,9 @@ static const unsigned char SEQ_ACL_OFF[] = {
 	0x00
 };
 
-static const unsigned char SEQ_ACL_25[] = {
+static const unsigned char SEQ_ACL_15[] = {
 	0x55,
-	0x02,
+	0x01,
 };
 
 static const unsigned char SEQ_ACL_OFF_OPR_AVR[] = {
@@ -152,9 +152,15 @@ static const unsigned char SEQ_GLOBAL_PARA_33rd[] = {
 	0xB0,
 	0x20
 };
+
 static const unsigned char SEQ_POC_SETTING[] = {
 	0xFE,
 	0x08
+};
+
+static const unsigned char SEQ_SETUP_MARGIN[] = {
+	0xFF,
+	0x00, 0x00, 0x00, 0x08
 };
 
 static unsigned char SEQ_PARTIAL_AREA[] = {
@@ -177,13 +183,13 @@ static const unsigned char SEQ_GLOBAL_PARAM_ELVSSHBM[] = {
 
 enum {
 	ACL_STATUS_0P,
-	ACL_STATUS_25P,
+	ACL_STATUS_15P,
 	ACL_STATUS_MAX
 };
 
 static const unsigned char *ACL_CUTOFF_TABLE[ACL_STATUS_MAX] = {
 	SEQ_ACL_OFF,
-	SEQ_ACL_25,
+	SEQ_ACL_15,
 };
 
 enum {
@@ -232,7 +238,7 @@ static const unsigned int ELVSS_DIM_TABLE[ELVSS_STATUS_MAX] = {
 	249, 265, 282, 300, 400
 };
 
-static const unsigned char ELVSS_TABLE[ACL_STATUS_MAX][ELVSS_STATUS_MAX] = {
+static const unsigned char ELVSS_TABLE_RevB[ACL_STATUS_MAX][ELVSS_STATUS_MAX] = {
 	{
 		0x1B, 0x1A, 0x1A, 0x19, 0x19, 0x18, 0x18, 0x17, 0x16, 0x16,
 		0x15, 0x14, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13,
@@ -243,6 +249,19 @@ static const unsigned char ELVSS_TABLE[ACL_STATUS_MAX][ELVSS_STATUS_MAX] = {
 		0x13, 0x12, 0x11, 0x10, 0x0F
 	}
 };
+
+static const unsigned char ELVSS_TABLE[ACL_STATUS_MAX][ELVSS_STATUS_MAX] = {
+	{
+		0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13,
+		0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13,
+		0x12, 0x11, 0x10, 0x0F, 0x0F
+	}, {
+		0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
+		0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
+		0x13, 0x12, 0x11, 0x10, 0x0F
+	}
+};
+const unsigned char (*pELVSS_TABLE)[ELVSS_STATUS_MAX] = ELVSS_TABLE;
 
 enum {
 	TSET_25_DEGREES,

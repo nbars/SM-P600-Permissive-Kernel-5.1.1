@@ -45,6 +45,7 @@
 #define MAX_ACCEL_1G			4096
 
 #define BMA280_DEFAULT_DELAY            200000000LL
+#define BMA280_MIN_DELAY                5000000LL
 #define BMA280_CHIP_ID                  0xFB
 
 #define CHIP_ID_RETRIES                 3
@@ -94,6 +95,8 @@ struct bma280_p {
 	int irq_state;
 	int acc_int1;
 	int time_count;
+
+	u64 old_timestamp;
 };
 
 static int bma280_open_calibration(struct bma280_p *);
@@ -295,11 +298,7 @@ static int bma280_read_accel_xyz(struct bma280_p *data,	struct bma280_v *acc)
 	acc->z = acc->z >> (sizeof(short) * 8 - (BMA280_ACC_Z14_LSB__LEN +
 			BMA280_ACC_Z_MSB__LEN));
 
-#if defined(CONFIG_SENSORS_BMI_DUALIZATION)
-	remap_sensor_data(acc->v, data->chip_pos, NORMAL_POSITION);
-#else
 	remap_sensor_data(acc->v, data->chip_pos);
-#endif
 
 exit:
 	return ret;
@@ -323,6 +322,12 @@ static void bma280_work_func(struct work_struct *work)
 	struct bma280_v acc;
 	struct bma280_p *data = container_of(work, struct bma280_p, work);
 
+	struct timespec ts = ktime_to_timespec(ktime_get_boottime());
+	u64 timestamp_new = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+	int time_hi, time_lo;
+	u64 diff = 0ULL;
+	u64 delay = ktime_to_ns(data->poll_delay);
+
 	ret = bma280_read_accel_xyz(data, &acc);
 	if (ret < 0)
 		goto exit;
@@ -331,17 +336,34 @@ static void bma280_work_func(struct work_struct *work)
 	data->accdata.y = acc.y - data->caldata.y;
 	data->accdata.z = acc.z - data->caldata.z;
 
-#if defined(CONFIG_SENSORS_BMI_DUALIZATION)
-	input_report_rel(data->input, REL_X, data->accdata.x / 4);
-	input_report_rel(data->input, REL_Y, data->accdata.y / 4);
-	input_report_rel(data->input, REL_Z, data->accdata.z / 4);
-	input_sync(data->input);
-#else
+	if (data->old_timestamp != 0 &&
+	   ((timestamp_new - data->old_timestamp) > ktime_to_ms(data->poll_delay) * 1800000LL)) {
+
+		u64 shift_timestamp = delay >> 1;
+		u64 timestamp = 0ULL;
+
+		for (timestamp = data->old_timestamp + delay; timestamp < timestamp_new - shift_timestamp; timestamp+=delay) {
+				time_hi = (int)((timestamp & TIME_HI_MASK) >> TIME_HI_SHIFT);
+				time_lo = (int)(timestamp & TIME_LO_MASK);
+				input_report_rel(data->input, REL_X, data->accdata.x);
+				input_report_rel(data->input, REL_Y, data->accdata.y);
+				input_report_rel(data->input, REL_Z, data->accdata.z);
+				input_report_rel(data->input, REL_DIAL, time_hi);
+				input_report_rel(data->input, REL_MISC, time_lo);
+				input_sync(data->input);
+		}
+	}
+
+	time_hi = (int)((timestamp_new & TIME_HI_MASK) >> TIME_HI_SHIFT);
+	time_lo = (int)(timestamp_new & TIME_LO_MASK);
+
 	input_report_rel(data->input, REL_X, data->accdata.x);
 	input_report_rel(data->input, REL_Y, data->accdata.y);
 	input_report_rel(data->input, REL_Z, data->accdata.z);
+	input_report_rel(data->input, REL_DIAL, time_hi);
+	input_report_rel(data->input, REL_MISC, time_lo);
 	input_sync(data->input);
-#endif
+	data->old_timestamp = timestamp_new;
 
 exit:
 	if ((ktime_to_ns(data->poll_delay) * (int64_t)data->time_count)
@@ -391,6 +413,7 @@ static ssize_t bma280_enable_store(struct device *dev,
 
 	if (enable) {
 		if (pre_enable == OFF) {
+			data->old_timestamp = 0LL;
 			bma280_open_calibration(data);
 			bma280_set_mode(data, BMA280_MODE_NORMAL);
 			atomic_set(&data->enable, ON);
@@ -430,8 +453,15 @@ static ssize_t bma280_delay_store(struct device *dev,
 	ret = kstrtoll(buf, 10, &delay);
 	if (ret) {
 		pr_err("[SENSOR]: %s - Invalid Argument\n", __func__);
-		return ret;
+		goto exit;
+	} else if (ktime_to_ns(data->poll_delay) == delay) {
+		goto exit;
 	}
+
+	if(delay > BMA280_DEFAULT_DELAY)
+		delay = BMA280_DEFAULT_DELAY;
+	else if(delay < BMA280_MIN_DELAY)
+		delay = BMA280_MIN_DELAY;
 
 	if (delay <= 3000000LL)
 		bma280_set_bandwidth(data, BMA280_BW_500HZ);
@@ -453,7 +483,7 @@ static ssize_t bma280_delay_store(struct device *dev,
 		bma280_set_mode(data, BMA280_MODE_NORMAL);
 		bma280_set_enable(data, ON);
 	}
-
+exit:
 	return size;
 }
 
@@ -880,6 +910,8 @@ static int bma280_input_init(struct bma280_p *data)
 	input_set_capability(dev, EV_REL, REL_X);
 	input_set_capability(dev, EV_REL, REL_Y);
 	input_set_capability(dev, EV_REL, REL_Z);
+	input_set_capability(dev, EV_REL, REL_DIAL);
+	input_set_capability(dev, EV_REL, REL_MISC);
 	input_set_drvdata(dev, data);
 
 	ret = input_register_device(dev);
@@ -968,7 +1000,6 @@ static int bma280_probe(struct i2c_client *client,
 		       "reactive_wake_lock");
 
 	/* read chip id */
-	bma280_set_mode(data, BMA280_MODE_NORMAL);
 	for (i = 0; i < CHIP_ID_RETRIES; i++) {
 		ret = i2c_smbus_read_word_data(client, BMA280_CHIP_ID_REG);
 		if ((ret & 0x00ff) != BMA280_CHIP_ID) {
@@ -1034,10 +1065,6 @@ static int bma280_probe(struct i2c_client *client,
 
 	pr_info("[SENSOR]: %s - Probe done!(chip pos : %d)\n",
 		__func__, data->chip_pos);
-
-#if defined(CONFIG_SENSORS_BMI_DUALIZATION)
-	set_dual_position(BMA280_GYRO_POSITION);
-#endif
 
 	return 0;
 

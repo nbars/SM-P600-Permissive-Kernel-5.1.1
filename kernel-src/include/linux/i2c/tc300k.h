@@ -32,6 +32,7 @@ struct tc300k_platform_data {
 	const char *fw_name;
 	bool panel_connect;
 	u8 fw_version;
+	u8 sensing_ch_num;
 };
 
 #endif /* __LINUX_TC300K_H */

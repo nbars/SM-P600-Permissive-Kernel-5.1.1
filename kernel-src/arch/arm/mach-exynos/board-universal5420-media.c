@@ -1062,7 +1062,9 @@ static struct platform_device *universal5420_media_devices[] __initdata = {
 #endif
 #ifdef CONFIG_VIDEO_EXYNOS5_FIMC_IS
 	&exynos5_device_fimc_is,
+#ifndef CONFIG_CAMERA_EEPROM
 	&s3c64xx_device_spi3,
+#endif
 #endif
 	&exynos5_device_scaler0,
 	&exynos5_device_scaler1,
@@ -1201,6 +1203,7 @@ void __init exynos5_universal5420_media_init(void)
 
 	exynos5_fimc_is_set_platdata(&exynos5_fimc_is_data);
 
+#ifndef CONFIG_CAMERA_EEPROM
 	if (!exynos_spi_cfg_cs(spi3_csi[0].line, 3)) {
 		s3c64xx_spi3_set_platdata(&s3c64xx_spi3_pdata,
 			EXYNOS_SPI_SRCCLK_SCLK, ARRAY_SIZE(spi3_csi));
@@ -1210,6 +1213,7 @@ void __init exynos5_universal5420_media_init(void)
 	} else {
 		pr_err("%s: Error requesting gpio for SPI-CH1 CS\n", __func__);
 	}
+#endif
 #endif
 #ifdef CONFIG_VIDEO_EXYNOS_JPEG_HX
 	s3c_set_platdata(&exynos5_jpeg_hx_pd, sizeof(exynos5_jpeg_hx_pd),

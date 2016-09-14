@@ -114,6 +114,8 @@ static const u8 tuning_blk_pattern_8bit[] = {
 #define DRTO		200
 #define DRTO_MON_PERIOD	50
 
+void dw_mci_runtime_timing_change(struct dw_mci *host, unsigned int qos_level);
+
 /**
  * struct dw_mci_slot - MMC slot state
  * @mmc: The mmc_host representing this slot.
@@ -226,9 +228,26 @@ static void dw_mci_qos_exit(struct dw_mci *host)
 
 static void dw_mci_qos_get(struct dw_mci *host)
 {
+	unsigned int qos_value = 0;
+
 	if (delayed_work_pending(&host->qos_work))
 		cancel_delayed_work_sync(&host->qos_work);
-	pm_qos_update_request(&host->pm_qos_int, host->pdata->qos_int_level);
+
+	if (host->pdata->int_camera) {
+		qos_value = pm_qos_request(PM_QOS_DEVICE_THROUGHPUT);
+
+		if (host->pdata->int_camera <= qos_value)
+			qos_value = host->pdata->int_camera;
+		else
+			qos_value = host->pdata->qos_int_level;
+
+		if (host->pdata->tuned &&
+				(host->pdata->io_mode == MMC_TIMING_MMC_HS200_DDR))
+			dw_mci_runtime_timing_change(host, qos_value);
+	} else
+		qos_value = host->pdata->qos_int_level;
+
+	pm_qos_update_request(&host->pm_qos_int, qos_value);
 }
 
 static void dw_mci_qos_put(struct dw_mci *host)
@@ -1158,7 +1177,7 @@ static bool dw_mci_wait_data_busy(struct dw_mci *host, struct mmc_request *mrq)
 	u32 status;
 	unsigned long timeout = jiffies + msecs_to_jiffies(500);
 	struct dw_mci_slot *slot = host->cur_slot;
-	int try = 6;
+	int try = 2;
 	u32 clkena;
 	bool ret = false;
 
@@ -1299,7 +1318,10 @@ static void __dw_mci_start_request(struct dw_mci *host,
 	/* Slot specific timing and width adjustment */
 	dw_mci_setup_bus(slot, 0);
 
-	if (host->pdata->sw_timeout)
+	if (mrq->cmd->opcode == MMC_SEND_TUNING_BLOCK ||
+				mrq->cmd->opcode == MMC_SEND_TUNING_BLOCK_HS200)
+		mod_timer(&host->timer, jiffies + msecs_to_jiffies(500));
+	else if (host->pdata->sw_timeout)
 		mod_timer(&host->timer,
 			jiffies + msecs_to_jiffies(host->pdata->sw_timeout));
 	else
@@ -1414,6 +1436,7 @@ static void dw_mci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 static void dw_mci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct dw_mci_slot *slot = mmc_priv(mmc);
+	struct dw_mci *host = slot->host;
 	u32 regs;
 
 	/* set default 1 bit mode */
@@ -1435,7 +1458,8 @@ static void dw_mci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	/* DDR mode set */
 	if (ios->timing == MMC_TIMING_UHS_DDR50 ||
-	    ios->timing == MMC_TIMING_MMC_HS200_DDR) {
+	    ios->timing == MMC_TIMING_MMC_HS200_DDR ||
+	    ios->timing == MMC_TIMING_MMC_HS200_DDR_ES) {
 		if (!mmc->tuning_progress)
 			regs |= (0x1 << slot->id) << 16;
 	} else
@@ -1449,7 +1473,10 @@ static void dw_mci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	mci_writel(slot->host, UHS_REG, regs);
 
-	if (ios->timing == MMC_TIMING_MMC_HS200_DDR)
+	host->pdata->io_mode = ios->timing;
+
+	if (ios->timing == MMC_TIMING_MMC_HS200_DDR ||
+	    ios->timing == MMC_TIMING_MMC_HS200_DDR_ES)
 		if (!mmc->tuning_progress)
 			mci_writel(slot->host, CDTHRCTL, 512 << 16 | 1);
 
@@ -1608,7 +1635,6 @@ static void dw_mci_set_sampling(struct dw_mci *host, u8 sample)
 	clksel = mci_readl(host, CLKSEL);
 	clksel = (clksel & 0xfffffff8) | (sample & 0x7);
 	mci_writel(host, CLKSEL, clksel);
-	host->pdata->clk_smpl = sample;
 	dw_mci_set_quirk_endbit(host, sample);
 }
 
@@ -1718,11 +1744,8 @@ static void dw_mci_set_fine_tuning_bit(struct dw_mci *host,
 
 	clksel = mci_readl(host, CLKSEL);
 	clksel = (clksel & ~BIT(6));
-	if (is_fine_tuning) {
-		host->pdata->is_fine_tuned = true;
+	if (is_fine_tuning)
 		clksel |= BIT(6);
-	} else
-		host->pdata->is_fine_tuned = false;
 	mci_writel(host, CLKSEL, clksel);
 }
 
@@ -1752,6 +1775,26 @@ static void dw_mci_tuning_drv_st(struct dw_mci_slot *slot)
 		brd->tuning_drv_st(slot->host, slot->id);
 }
 
+void dw_mci_runtime_timing_change(struct dw_mci *host, unsigned int qos_level)
+{
+	u8 sample;
+
+	if (qos_level >= host->pdata->int_camera) {
+		if (host->pdata->is_fine_tuned)
+			dw_mci_set_fine_tuning_bit(host, false);
+		else {
+			sample = host->pdata->clk_smpl;
+			sample -= 1;
+			dw_mci_set_sampling(host, sample);
+			dw_mci_set_fine_tuning_bit(host, true);
+		}
+	} else {
+		dw_mci_set_fine_tuning_bit(host,
+			host->pdata->is_fine_tuned);
+		dw_mci_set_sampling(host, host->pdata->clk_smpl);
+	}
+}
+
 static int dw_mci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 {
 	struct dw_mci_slot *slot = mmc_priv(mmc);
@@ -1770,7 +1813,7 @@ static int dw_mci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	u16 map = 0;
 	bool en_fine_tuning = false;
 	bool is_fine_tuning = false;
-	u16 abnormal_result = 0xFF;
+	u16 abnormal_result = 0xFF & ~(host->pdata->tuning_map_mask);
 
 	if (host->quirks & DW_MMC_QUIRK_USE_FINE_TUNING &&
 			mmc->tuning_progress & MMC_HS200_TUNING) {
@@ -1798,6 +1841,7 @@ static int dw_mci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	}
 
 	if (host->pdata->tuned) {
+		dw_mci_restore_drv_st(slot, &compensation);
 		dw_mci_set_sampling(host, host->pdata->clk_smpl);
 		mci_writel(host, CDTHRCTL, host->cd_rd_thr << 16 | 1);
 		return 0;
@@ -1909,8 +1953,13 @@ static int dw_mci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 
 			retries--;
 			if (mid >= 0) {
-				if (map != (abnormal_result & ~(host->pdata->tuning_map_mask))
-					|| !retries) {
+				if (map != abnormal_result || !retries) {
+					if (retries < (MAX_TUNING_RETRIES - 1)) {
+						if ((host->pdata->tuning_map[MAX_TUNING_RETRIES-retries-2] & abnormal_result)
+								!= abnormal_result) {
+							dw_mci_save_drv_st(slot);
+						}
+					}
 					tuned = true;
 					break;
 				}
@@ -1925,7 +1974,10 @@ static int dw_mci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	} while (!tuned && retries);
 
 	dw_mci_restore_drv_st(slot, &compensation);
-	mid = (mid + 8 + compensation) % 8;
+	if (((mci_readl(host, CLKSEL) >> 24) & 0x7) == 1)
+		mid = (mid + 8 + compensation) % 8;
+	else
+		mid = (mid + 16 + compensation) % 16;
 
 	/*
 	 * To set sample value with mid, the value should be divided by 2,
@@ -1934,15 +1986,20 @@ static int dw_mci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	 * using fine tuning.
 	 */
 	if (en_fine_tuning) {
-		if (mid % 2)
+		if (mid % 2) {
 			dw_mci_set_fine_tuning_bit(host, true);
-		else
+			host->pdata->is_fine_tuned = true;
+		} else {
 			dw_mci_set_fine_tuning_bit(host, false);
+			host->pdata->is_fine_tuned = false;
+		}
+
 		mid /= 2;
 	}
 
 	if (tuned) {
 		dw_mci_set_sampling(host, (u8)mid);
+		host->pdata->clk_smpl = (u8)mid;
 		if (host->pdata->only_once_tune)
 			host->pdata->tuned = true;
 	} else {
@@ -1950,6 +2007,8 @@ static int dw_mci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 		dw_mci_set_sampling(host, start_tune);
 		ret = -EIO;
 	}
+
+	dev_info(&host->dev, "CLKSEL 0x %08x\n", mci_readl(host, CLKSEL));
 
 	kfree(tuning_blk);
 
@@ -2127,8 +2186,13 @@ static void dw_mci_command_complete(struct dw_mci *host, struct mmc_command *cmd
 
 	if (status & SDMMC_INT_RTO)
 		cmd->error = -ETIMEDOUT;
-	else if ((cmd->flags & MMC_RSP_CRC) && (status & SDMMC_INT_RCRC))
+	else if ((cmd->flags & MMC_RSP_CRC) && (status & SDMMC_INT_RCRC)) {
 		cmd->error = -EILSEQ;
+		/* for debugging, delete later*/
+		if (cmd->opcode == MMC_SET_BLOCK_COUNT)
+			dev_err(&host->dev, "RCRC, CLKSEL:	0x%08x\n",
+				mci_readl(host, CLKSEL));
+	}
 	else if (status & SDMMC_INT_RESP_ERR)
 		cmd->error = -EIO;
 	else
@@ -3050,6 +3114,11 @@ static void dw_mci_timeout_timer(unsigned long data)
 	if (host && host->mrq) {
 		mrq = host->mrq;
 
+		dev_err(&host->dev,
+			"Timeout waiting for hardware interrupt."
+			" state = %d\n", host->state);
+		dw_mci_reg_dump(host);
+
 		spin_lock(&host->lock);
 
 		host->sg = NULL;
@@ -3080,10 +3149,6 @@ static void dw_mci_timeout_timer(unsigned long data)
 		}
 
 		spin_unlock(&host->lock);
-		dev_err(&host->dev,
-			"Timeout waiting for hardware interrupt."
-			" state = %d\n", host->state);
-		dw_mci_reg_dump(host);
 		dw_mci_fifo_reset(&host->dev, host);
 		dw_mci_ciu_reset(&host->dev, host);
 		spin_lock(&host->lock);
@@ -3856,7 +3921,7 @@ int dw_mci_suspend(struct dw_mci *host)
 
 	if (host->pdata->cd_type == DW_MCI_CD_GPIO) {
 		if (tflash_present)
-			mdelay(15);
+			mdelay(25);
 	}
 
 	return 0;

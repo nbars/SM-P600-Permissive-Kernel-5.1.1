@@ -1101,6 +1101,11 @@ config CHAGALL_LTE
 	help
 	  Support CHAGALL LTE Board
 
+config CHAGALL_TD
+	bool "CHAGALL TD Board"
+	help
+	  Support CHAGALL TD Board
+
 config KLIMT_3G
 	bool "KLIMT_3G 3G Board"
 	help
@@ -1116,6 +1121,11 @@ config KLIMT_LTE
 	help
 	  Support KLIMT LTE Board
 
+config KLIMT_TD
+	bool "KLIMT TD Board"
+	help
+	  Support KLIMT TD Board
+
 endchoice
 
 config HAVE_3G
@@ -1127,6 +1137,16 @@ config HAVE_LTE
 	bool "HA VE LTE Board"
 	help
 	  Support HA VE LTE Board
+
+config HA3G_DS
+	bool "HA 3G DS Board"
+	help
+	  Support HA 3G DS Board
+
+config IPC_DS_DN
+	bool "HA 3G DS Board"
+	help
+	  Support HA 3G DS Board
 
 choice
 	prompt "Support Target Locale"
@@ -1145,6 +1165,11 @@ config TARGET_LOCALE_USA
 	bool "Locale USA support"
 	help
 	  Enable universal5420 LOCALE USA.
+
+config TARGET_LOCALE_BMC
+	bool "Locale BMC support"
+	help
+	  Enable universal5420 LOCALE BMC.
 
 config TARGET_LOCALE_DEMO
 	bool "Locale DEMO support"
@@ -1203,7 +1228,7 @@ config GPS_GSD4T
 config GPS_GSD5T
 	bool "CSR_GPS_CHIPSET_5T"
 	default n
-	
+
 config BT_BCM4339
 	bool "Enable BCM4339 driver"
 	default n
@@ -1387,12 +1412,25 @@ endchoice
 
 endif
 
+config SEC_MISC
+	bool "Samsung TN Misc Feature"
+	default n
+	help
+	  Samsung TN Misc extension Feature. Do additional work when Misc.
+
 comment "Debugging Feature"
 menuconfig SEC_DEBUG
 	bool "Samsung TN Ramdump Feature"
 	default y
 	help
 	  Samsung TN Ramdump Feature. Use INFORM3 and magic number at 0xc0000000.
+
+comment "BSP Feature"
+menuconfig SEC_BSP
+	bool "Samsung TN BSP Feature"
+	default n
+	help
+		Samsung TN BSP Feature.
 
 if SEC_DEBUG
 config SEC_DEBUG_SCHED_LOG
@@ -1491,7 +1529,7 @@ config SEC_DEBUG_LIST_PANIC
 config SEC_DEBUG_IOVMM
 	bool "panic when iovmm alloc fails"
 	default n
-	help 
+	help
 	  panic when iovmm allocation fails
 	  this will immediately stop the system.
 
@@ -1580,12 +1618,6 @@ config SEC_DEBUG_SUBSYS
 	bool "Enable summary dump support" if EMBEDDED
 	help
 	  Samsung Summary dump Feature for debugging use.
-
-if (LINK_DEVICE_HSIC)
-config EHCI_MODEM_PORTNUM
-	int "EHCI port number of modem connection"
-	default 2
-endif
 
 comment "Samsung TN Power Management Options"
 menuconfig SEC_PM

@@ -20,6 +20,10 @@
 #include <linux/mfd/samsung/core.h>
 #include <linux/mfd/samsung/s2mps11.h>
 
+#if defined(CONFIG_REGULATOR_S2ABB01)
+#include <linux/regulator/s2abb01.h>
+#endif
+
 #define SMDK5420_PMIC_EINT	IRQ_EINT(24)
 
 static struct regulator_consumer_supply s2m_buck1_consumer =
@@ -93,7 +97,6 @@ static struct regulator_consumer_supply s2m_ldo12_consumer[] = {
 };
 
 static struct regulator_consumer_supply s2m_ldo13_consumer[] = {
-	REGULATOR_SUPPLY("vmmc2_2.8v_ap", NULL),
 	REGULATOR_SUPPLY("vqmmc", "dw_mmc.2"),
 };
 
@@ -101,9 +104,11 @@ static struct regulator_consumer_supply s2m_ldo14_consumer[] = {
 	REGULATOR_SUPPLY("vcc_3.0v_motor", NULL),
 };
 
+#if !defined(CONFIG_KLIMT_WIFI)
 static struct regulator_consumer_supply s2m_ldo15_consumer[] = {
 	REGULATOR_SUPPLY("leda_2.8v", NULL),
 };
+#endif
 
 static struct regulator_consumer_supply s2m_ldo16_consumer[] = {
 	REGULATOR_SUPPLY("vcc_2.8v_ap", NULL),
@@ -150,16 +155,18 @@ static struct regulator_consumer_supply s2m_ldo28_consumer[] = {
 };
 
 static struct regulator_consumer_supply s2m_ldo29_consumer[] = {
-	REGULATOR_SUPPLY("vddr_1.8v", NULL),
+	REGULATOR_SUPPLY("vddr_1.6v", NULL),
 };
 
 static struct regulator_consumer_supply s2m_ldo30_consumer[] = {
 	REGULATOR_SUPPLY("vtouch_1.8v", NULL),
 };
 
+#if !defined(CONFIG_KLIMT_WIFI)
 static struct regulator_consumer_supply s2m_ldo31_consumer[] = {
 	REGULATOR_SUPPLY("grip_1.8v", NULL),
 };
+#endif
 
 static struct regulator_consumer_supply s2m_ldo32_consumer[] = {
 	REGULATOR_SUPPLY("tsp_1.8v", NULL),
@@ -219,12 +226,14 @@ SREGULATOR_INIT(ldo11, "vhsic_1.0v_ap", 1000000, 1000000, 1, 1,
 		REGULATOR_CHANGE_STATUS, 1);
 SREGULATOR_INIT(ldo12, "vhsic_1.8v_ap", 1800000, 1800000, 1, 1,
 		REGULATOR_CHANGE_STATUS, 1);
-SREGULATOR_INIT(ldo13, "vmmc2_2.8v_ap", 1800000, 2800000, 0, 0,
-		REGULATOR_CHANGE_STATUS, 0);
+SREGULATOR_INIT(ldo13, "VMMC2_2.8V_AP", 1800000, 2800000, 0, 1,
+		REGULATOR_CHANGE_VOLTAGE | REGULATOR_CHANGE_STATUS, 0);
 SREGULATOR_INIT(ldo14, "vcc_3.0v_motor", 3000000, 3000000, 0, 0,
 		REGULATOR_CHANGE_STATUS, 0);
-SREGULATOR_INIT(ldo15, "leda_2.8v", 2800000, 2800000, 1, 1,
+#if !defined(CONFIG_KLIMT_WIFI)
+SREGULATOR_INIT(ldo15, "leda_2.8v", 2800000, 2800000, 0, 0,
 		REGULATOR_CHANGE_STATUS, 1);
+#endif
 SREGULATOR_INIT(ldo16, "vcc_2.8v_ap", 2800000, 2800000, 1, 1,
 		REGULATOR_CHANGE_STATUS, 1);
 SREGULATOR_INIT(ldo17, "vci_3.0v", 3000000, 3000000, 0, 0,
@@ -247,12 +256,14 @@ SREGULATOR_INIT(ldo27, "vg3ds_1.0v_ap", 800000, 1000000, 1, 0,
 		REGULATOR_CHANGE_VOLTAGE | REGULATOR_CHANGE_STATUS, 1);
 SREGULATOR_INIT(ldo28, "vdd3_1.8v", 1800000, 1800000, 0, 0,
 		REGULATOR_CHANGE_STATUS, 0);
-SREGULATOR_INIT(ldo29, "vddr_1.8v", 1800000, 1800000, 0, 0,
+SREGULATOR_INIT(ldo29, "vddr_1.6v", 1600000, 1600000, 0, 0,
 		REGULATOR_CHANGE_STATUS, 0);
 SREGULATOR_INIT(ldo30, "vtouch_1.8v", 1900000, 1900000, 0, 0,
 		REGULATOR_CHANGE_STATUS, 0);
+#if !defined(CONFIG_KLIMT_WIFI)
 SREGULATOR_INIT(ldo31, "grip_1.8v", 1800000, 1800000, 1, 1,
 		REGULATOR_CHANGE_STATUS, 0);
+#endif
 SREGULATOR_INIT(ldo32, "tsp_1.8v", 1800000, 1800000, 0, 0,
 		REGULATOR_CHANGE_STATUS, 0);
 SREGULATOR_INIT(ldo33, "vcc_1.8v_mhl", 1800000, 1800000, 0, 0,
@@ -388,7 +399,9 @@ static struct sec_regulator_data exynos_regulators[] = {
 	{S2MPS11_LDO12, &s2m_ldo12_data},
 	{S2MPS11_LDO13, &s2m_ldo13_data},
 	{S2MPS11_LDO14, &s2m_ldo14_data},
+#if !defined(CONFIG_KLIMT_WIFI)
 	{S2MPS11_LDO15, &s2m_ldo15_data},
+#endif
 	{S2MPS11_LDO16, &s2m_ldo16_data},
 	{S2MPS11_LDO17, &s2m_ldo17_data},
 	{S2MPS11_LDO19, &s2m_ldo19_data},
@@ -402,7 +415,9 @@ static struct sec_regulator_data exynos_regulators[] = {
 	{S2MPS11_LDO28, &s2m_ldo28_data},
 	{S2MPS11_LDO29, &s2m_ldo29_data},
 	{S2MPS11_LDO30, &s2m_ldo30_data},
+#if !defined(CONFIG_KLIMT_WIFI)
 	{S2MPS11_LDO31, &s2m_ldo31_data},
+#endif
 	{S2MPS11_LDO32, &s2m_ldo32_data},
 	{S2MPS11_LDO33, &s2m_ldo33_data},
 	{S2MPS11_LDO34, &s2m_ldo34_data},
@@ -461,7 +476,6 @@ static struct sec_pmic_platform_data exynos5_s2m_pdata = {
 	.regulators		= exynos_regulators,
 	.cfg_pmic_irq		= sec_cfg_irq,
 	.wakeup			= 1,
-	.wtsr_smpl		= 1,
 	.opmode_data		= s2mps11_opmode_data,
 	.buck16_ramp_delay	= 12,
 	.buck2_ramp_delay	= 12,
@@ -470,6 +484,12 @@ static struct sec_pmic_platform_data exynos5_s2m_pdata = {
 	.buck3_ramp_enable	= 1,
 	.buck4_ramp_enable	= 1,
 	.buck6_ramp_enable	= 1,
+#ifdef CONFIG_SEC_FACTORY
+	.wtsr_smpl		= false,
+#else
+	.wtsr_smpl		= true,
+#endif
+	.jig_smpl_disable	= true,
 };
 
 static struct i2c_board_info hs_i2c_devs3_s2mps11[] __initdata = {
@@ -479,6 +499,24 @@ static struct i2c_board_info hs_i2c_devs3_s2mps11[] __initdata = {
 		.irq		= SMDK5420_PMIC_EINT,
 	},
 };
+
+#if defined(CONFIG_REGULATOR_S2ABB01)
+static struct s2abb01_regulator_data exynos_s2abb01_regulators[] = {
+};
+
+static struct s2abb01_platform_data exynos5_s2abb01_pdata = {
+	.num_regulators		= 0,
+	.regulators		= exynos_s2abb01_regulators,
+	.suspend_on_ctrl	= true,
+};
+
+static struct i2c_board_info hs_i2c_devs4_s2abb01[] __initdata = {
+	{
+		I2C_BOARD_INFO("s2abb01", (0xAA >> 1)),
+		.platform_data	= &exynos5_s2abb01_pdata,
+	}
+};
+#endif
 
 struct exynos5_platform_i2c hs_i2c3_data __initdata = {
 	.bus_number = 7,
@@ -491,7 +529,20 @@ struct exynos5_platform_i2c hs_i2c3_data __initdata = {
 
 void __init board_klimt_pmic_init(void)
 {
+	int ret = 0;
+
 	exynos5_hs_i2c3_set_platdata(&hs_i2c3_data);
 	i2c_register_board_info(7, hs_i2c_devs3_s2mps11, ARRAY_SIZE(hs_i2c_devs3_s2mps11));
 	platform_device_register(&exynos5_device_hs_i2c3);
+#if defined(CONFIG_REGULATOR_S2ABB01)
+	exynos5_hs_i2c4_set_platdata(NULL);
+	ret = i2c_register_board_info(8, hs_i2c_devs4_s2abb01, ARRAY_SIZE(hs_i2c_devs4_s2abb01));
+	if (ret < 0) {
+		pr_err("%s, hs_i2c_devs4_s2abb01 adding i2c fail(err=%d)\n", __func__, ret);
+	}
+	ret = platform_device_register(&exynos5_device_hs_i2c4);
+	if (ret < 0)
+		pr_err("%s, s2abb01 platform device register failed (err=%d)\n",
+			__func__, ret);
+#endif
 }

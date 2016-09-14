@@ -234,9 +234,15 @@ read_start:
 
 	dbg_log_event(ksb, "KS_READ", copied, 0);
 
-	if ((ksb->ifc->cur_altsetting->desc.bInterfaceNumber == 2))
+	if ((ksb->ifc->cur_altsetting->desc.bInterfaceNumber == 2)) {
 		dev_info(ksb->fs_dev.this_device, " read: count:%d space:%d copied:%d", count,
 				space, copied);
+		if (count == 8) {
+			pr_info("%s: usage=%d, child=%d\n", __func__,
+					atomic_read(&ksb->udev->dev.power.usage_count),
+					atomic_read(&ksb->udev->dev.power.child_count));
+		}
+	}
 #if 0
 	else
 		dev_dbg(ksb->fs_dev.this_device, "count:%d space:%d copied:%d", count,
@@ -398,7 +404,6 @@ static int ksb_fs_release(struct inode *ip, struct file *fp)
 {
 	struct ks_bridge	*ksb = fp->private_data;
 
-	dev_dbg(ksb->fs_dev.this_device, ":%s", ksb->fs_dev.name);
 	dbg_log_event(ksb, "FS-RELEASE", 0, 0);
 
 	clear_bit(FILE_OPENED, &ksb->flags);
@@ -513,6 +518,8 @@ static void ksb_rx_cb(struct urb *urb)
 	struct ks_bridge *ksb = pkt->ctxt;
 	bool wakeup = true;
 
+	usb_mark_last_busy(ksb->udev);
+
 	dbg_log_event(ksb, "C RX_URB", urb->status, urb->actual_length);
 
 #if 0
@@ -543,6 +550,12 @@ static void ksb_rx_cb(struct urb *urb)
 	if (urb->actual_length == 0) {
 		submit_one_urb(ksb, GFP_ATOMIC, pkt);
 		goto done;
+	}
+
+	if (urb->actual_length == 48) {
+		pr_info("%s: usage=%d, child=%d\n", __func__,
+				atomic_read(&ksb->udev->dev.power.usage_count),
+				atomic_read(&ksb->udev->dev.power.child_count));
 	}
 
 add_to_list:
@@ -782,6 +795,7 @@ static void ksb_usb_disconnect(struct usb_interface *ifc)
 	unsigned long flags;
 	struct data_pkt *pkt;
 
+	pr_info("%s called\n", __func__);
 	dbg_log_event(ksb, "PID-DETACH", 0, 0);
 
 	clear_bit(USB_DEV_CONNECTED, &ksb->flags);
@@ -818,6 +832,8 @@ static void ksb_usb_disconnect(struct usb_interface *ifc)
 	usb_put_dev(ksb->udev);
 	ksb->ifc = NULL;
 	usb_set_intfdata(ifc, NULL);
+
+	pr_info("%s done\n", __func__);
 
 	return;
 }

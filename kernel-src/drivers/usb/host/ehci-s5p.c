@@ -30,6 +30,21 @@
 #include <linux/mdm_hsic_pm.h>
 #endif
 
+#include <linux/cpu.h>
+#include <linux/cpumask.h>
+#include <linux/atomic.h>
+#include <linux/netdevice.h>
+#include <linux/pm_qos.h>
+
+int irq_select_affinity_usr(unsigned int irq, struct cpumask *mask);
+static int set_cpu_core_from_usb_irq(int enable);
+
+static struct notifier_block rndis_notifier;
+static struct notifier_block ehci_cpu_notifier;
+static atomic_t use_rndis;
+static int g_ehci_irq;
+static int g_ehci_cpu_core = 0;
+
 static struct pm_qos_request s5p_ehci_mif_qos;
 
 struct s5p_ehci_hcd {
@@ -473,16 +488,122 @@ exit:
 static DEVICE_ATTR(ehci_power, S_IWUSR | S_IWGRP | S_IRUSR | S_IRGRP,
 	show_ehci_power, store_ehci_power);
 
-static inline int create_ehci_sys_file(struct ehci_hcd *ehci)
+static ssize_t store_ehci_cpu_core(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	return device_create_file(ehci_to_hcd(ehci)->self.controller,
+	int ehci_cpu_core;
+	int err;
+
+	err = sscanf(buf,"%1d", &ehci_cpu_core);
+	if (err < 0 || err > 4) {
+		pr_err("set ehci cpu fail");
+		return count;
+	}
+
+	g_ehci_cpu_core	= ehci_cpu_core;
+	set_cpu_core_from_usb_irq(true);
+	printk(KERN_DEBUG "%s: EHCI core move to %d\n", __func__,g_ehci_cpu_core);
+
+	return count;
+}
+
+static DEVICE_ATTR(ehci_cpu_core, S_IWUSR | S_IWGRP | S_IRUSR | S_IRGRP,
+	NULL, store_ehci_cpu_core);
+
+static inline void create_ehci_sys_file(struct ehci_hcd *ehci)
+{
+	device_create_file(ehci_to_hcd(ehci)->self.controller,
 			&dev_attr_ehci_power);
+	device_create_file(ehci_to_hcd(ehci)->self.controller,
+			&dev_attr_ehci_cpu_core);
 }
 
 static inline void remove_ehci_sys_file(struct ehci_hcd *ehci)
 {
 	device_remove_file(ehci_to_hcd(ehci)->self.controller,
 			&dev_attr_ehci_power);
+	device_remove_file(ehci_to_hcd(ehci)->self.controller,
+			&dev_attr_ehci_cpu_core);
+}
+
+static int set_cpu_core_from_usb_irq(int enable)
+{
+	int err = 0;
+	unsigned int irq = g_ehci_irq;
+	cpumask_var_t new_value;
+
+	if (!irq_can_set_affinity(irq))
+		return -EIO;
+
+	if (enable) {
+		err = irq_set_affinity(irq, cpumask_of(g_ehci_cpu_core));
+	} else {
+
+		if (!alloc_cpumask_var(&new_value, GFP_KERNEL))
+			return -ENOMEM;
+
+		cpumask_setall(new_value);
+
+		if (!cpumask_intersects(new_value, cpu_online_mask))
+			err = irq_select_affinity_usr(irq, new_value);
+		else
+			err = irq_set_affinity(irq, new_value);
+
+		free_cpumask_var(new_value);
+	}
+
+	return err;
+}
+
+static int __cpuinit s5p_ehci_cpu_notify(struct notifier_block *self,
+				unsigned long action, void *hcpu)
+{
+	int cpu = (unsigned long)hcpu;
+
+	if (!g_ehci_irq || cpu != g_ehci_cpu_core)
+		goto exit;
+
+	switch (action) {
+	case CPU_ONLINE:
+	case CPU_DOWN_FAILED:
+	case CPU_ONLINE_FROZEN:
+		set_cpu_core_from_usb_irq(true);
+		pr_info("%s: set ehci irq to cpu%d\n", __func__, cpu);
+		break;
+	case CPU_DOWN_PREPARE:
+	case CPU_DOWN_PREPARE_FROZEN:
+		set_cpu_core_from_usb_irq(false);
+		pr_info("%s: set ehci irq to cpu%d\n", __func__, 0);
+		break;
+	default:
+		break;
+	}
+exit:
+	return NOTIFY_OK;
+}
+
+static int rndis_notify_callback(struct notifier_block *this,
+				unsigned long event, void *ptr)
+{
+	struct net_device *dev = ptr;
+
+	if (!net_eq(dev_net(dev), &init_net))
+		return NOTIFY_DONE;
+
+	if (!strncmp(dev->name, "rndis", 5)) {
+		switch (event) {
+		case NETDEV_UP:
+			atomic_inc(&use_rndis);
+			set_cpu_core_from_usb_irq(true);
+			break;
+		case NETDEV_DOWN:
+			set_cpu_core_from_usb_irq(false);
+			atomic_dec(&use_rndis);
+			break;
+		}
+	}
+	return NOTIFY_DONE;
 }
 
 static int __devinit s5p_ehci_probe(struct platform_device *pdev)
@@ -553,6 +674,14 @@ static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, s5p_ehci);
 
+	if (num_possible_cpus() > 1) {
+		atomic_set(&use_rndis, 0);
+		g_ehci_irq = irq;
+		rndis_notifier.notifier_call = rndis_notify_callback;
+		register_netdevice_notifier(&rndis_notifier);
+		ehci_cpu_notifier.notifier_call = s5p_ehci_cpu_notify;
+		register_cpu_notifier(&ehci_cpu_notifier);
+	}
 	s5p_ehci_phy_init(pdev);
 
 	ehci = hcd_to_ehci(hcd);
@@ -589,7 +718,7 @@ static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 #if defined(CONFIG_MDM_HSIC_PM)
 	if (pdev->dev.power.disable_depth > 0)
 		pm_runtime_enable(&pdev->dev);
-	pm_runtime_set_autosuspend_delay(&hcd->self.root_hub->dev, 0);
+	pm_runtime_set_autosuspend_delay(&hcd->self.root_hub->dev, 10);
 	pm_runtime_forbid(&pdev->dev);
 #endif
 	return 0;
@@ -622,6 +751,13 @@ static int __devexit s5p_ehci_remove(struct platform_device *pdev)
 	s5p_ehci->power_on = 0;
 	remove_ehci_sys_file(hcd_to_ehci(hcd));
 	usb_remove_hcd(hcd);
+
+	if (num_possible_cpus() > 1) {
+		atomic_set(&use_rndis, 0);
+		g_ehci_irq = 0;
+		unregister_netdevice_notifier(&rndis_notifier);
+		unregister_cpu_notifier(&ehci_cpu_notifier);
+	}
 
 	if (pdata && pdata->phy_exit)
 		pdata->phy_exit(pdev, S5P_USB_PHY_HOST);

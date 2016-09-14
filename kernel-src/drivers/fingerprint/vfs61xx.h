@@ -48,7 +48,6 @@
 #include <linux/jiffies.h>
 #include <linux/wakelock.h>
 #include <linux/pinctrl/consumer.h>
-#include <linux/gpio.h>
 #include <plat/gpio-cfg.h>
 
 /* Major number of device ID.
@@ -68,10 +67,7 @@
 /* Timeout value for polling DRDY signal assertion */
 #define DRDY_TIMEOUT_MS      40
 
-#ifdef CONFIG_SEC_FACTORY
-#undef ENABLE_SENSORS_FPRINT_SECURE
-#else
-#undef ENABLE_SENSORS_FPRINT_SECURE
+#ifdef ENABLE_SENSORS_FPRINT_SECURE
 #define FEATURE_SPI_WAKELOCK
 #endif
 

@@ -53,6 +53,7 @@
 #define USE_STYLUS
 /* #define SKIP_UPDATE_FW_ON_PROBE */
 /* #define REPORT_2D_Z */
+#define USE_ACTIVE_REPORT_RATE
 
 #elif defined(CONFIG_KLIMT)
 #define PROXIMITY_MODE
@@ -69,6 +70,7 @@
 #define CHECK_PR_NUMBER
 #define REPORT_2D_W
 #define USE_STYLUS
+#define USE_ACTIVE_REPORT_RATE
 
 #else
 #define PROXIMITY_MODE
@@ -228,6 +230,18 @@
 #define OBJECT_HOVER			(0x05)
 #define OBJECT_GLOVE			(0x06)
 
+/* Define for object type report enable Mask(F12_2D_CTRL23) */
+#define OBJ_TYPE_FINGER			(1 << 0)
+#define OBJ_TYPE_PASSIVE_STYLUS	(1 << 1)
+#define OBJ_TYPE_PALM			(1 << 2)
+#define OBJ_TYPE_UNCLASSIFIED	(1 << 3)
+#define OBJ_TYPE_HOVER			(1 << 4)
+#define OBJ_TYPE_GLOVE			(1 << 5)
+#define OBJ_TYPE_NARROW_SWIPE	(1 << 6)
+#define OBJ_TYPE_HANDEDGE		(1 << 7)
+#define OBJ_TYPE_DEFAUT			(0x85)
+/*OBJ_TYPE_FINGER, OBJ_TYPE_UNCLASSIFIED, OBJ_TYPE_HANDEDGE*/
+
 /* Define for Data report enable Mask(F12_2D_CTRL28) */
 #define RPT_TYPE (1 << 0)
 #define RPT_X_LSB (1 << 1)
@@ -322,7 +336,6 @@
 
 #ifdef EDGE_SWIPE
 #define EDGE_SWIPE_WIDTH_MAX	255
-#define EDGE_SWIPE_SUMSIZE_MAX	255
 #define EDGE_SWIPE_PALM_MAX		1
 
 #define EDGE_SWIPE_WITDH_X_OFFSET	5
@@ -385,6 +398,9 @@
  * If it is possible to replace that getting address from IC,
  * I recommend the latter than former.
  */
+#ifdef PROXIMITY_MODE
+#define MANUAL_DEFINED_OFFSET_GRIP_EDGE_EXCLUSION_RX	(32)
+#endif
 #ifdef SIDE_TOUCH
 #define MANUAL_DEFINED_OFFSET_SIDEKEY_THRESHOLD	(47)
 #endif
@@ -593,9 +609,8 @@ struct synaptics_rmi4_f12_ctrl_11 {
 			unsigned char y_maximum_z;
 			unsigned char x_amplitude;
 			unsigned char y_amplitude;
-			unsigned char gloved_finger_jitter_filter_strength;
 		};
-		unsigned char data[10];
+		unsigned char data[9];
 	};
 };
 
@@ -773,6 +788,9 @@ struct synaptics_rmi4_f51_handle {
 	unsigned short general_control_addr;
 	unsigned char general_control_2;		/* F51_CUSTOM_CTRL02 */
 	unsigned short general_control_2_addr;
+#ifdef PROXIMITY_MODE
+	unsigned short grip_edge_exclusion_rx_addr;
+#endif
 #ifdef SIDE_TOUCH
 	unsigned short sidebutton_tapthreshold_addr;
 #endif
@@ -910,7 +928,8 @@ struct synaptics_rmi4_f12_handle {
 /* CTRL */
 	unsigned short ctrl11_addr;		/* F12_2D_CTRL11 : for jitter level*/
 	unsigned short ctrl15_addr;		/* F12_2D_CTRL15 : for finger amplitude threshold */
-
+	unsigned short ctrl23_addr;		/* F12_2D_CTRL23 : object report enable */
+	unsigned char obj_type_enable;	/* F12_2D_CTRL23 */
 	unsigned short ctrl26_addr;		/* F12_2D_CTRL26 : for glove mode */
 	unsigned char feature_enable;	/* F12_2D_CTRL26 */
 	unsigned short ctrl28_addr;		/* F12_2D_CTRL28 : for report data */

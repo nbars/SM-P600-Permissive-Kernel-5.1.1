@@ -26,14 +26,6 @@ config SENSORS_BMI058
 	  If you say yes here you get support for Bosch-Sensortec's
 	  BMI058 Acceleration & Gyroscope Sensor.
 
-config SENSORS_BMI_DUALIZATION
-	tristate "BMI055 or BMI058 Combo Sensor Driver"
-	depends on I2C
-	default n
-	help
-	  If you say yes here you get support for Bosch-Sensortec's
-	  BMI055 or BMI058 Acceleration & Gyroscope Sensor.
-
 config SENSORS_AK8963C
 	tristate "AK8963C compass support"
 	default n
@@ -71,6 +63,16 @@ config SENSORS_TMD3782
 	  AMS tmd3782 device driver.
 
 	  Say N here if you do not use tmd3782.
+
+config SENSORS_ESD_DEFENCE
+	depends on I2C
+	tristate "ESD Defence"
+	default n
+	help
+	  Say Y here if you use ESD defence.
+	  This option enables ESD defence code.
+
+	  Say N here if you do not use ESD defence.
 
 config SENSORS_SX9500
 	depends on I2C

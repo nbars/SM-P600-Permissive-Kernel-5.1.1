@@ -43,6 +43,11 @@ static int s2abb01_i2c_probe(struct i2c_client *i2c,
 	struct s2abb01_dev *s2abb01;
 	int ret = 0;
 
+	if (pdata == NULL) {
+		pr_err("%s: no pdata\n", __func__);
+		return -ENODEV;
+	}
+
 	s2abb01 = kzalloc(sizeof(struct s2abb01_dev), GFP_KERNEL);
 	if (s2abb01 == NULL)
 		return -ENOMEM;
@@ -88,11 +93,16 @@ static int s2abb01_suspend(struct device *dev)
 	struct s2abb01_dev *s2abb01 = i2c_get_clientdata(i2c);
 
 	if (s2abb01->suspend_on_ctrl) {
+		int ret = 0;
 		/* Turn On the Enable bit */
-		regmap_update_bits(s2abb01->regmap, S2ABB01_REG_BB_OUT,
+		ret = regmap_update_bits(s2abb01->regmap, S2ABB01_REG_BB_OUT,
 			S2ABB01_BBLDO_EN_MASK, S2ABB01_BBLDO_EN_MASK);
-		regmap_update_bits(s2abb01->regmap, S2ABB01_REG_LDO_CTRL,
+		if (ret)
+			pr_err("%s: eMMC BUCK i2c update fail.(%d)", __func__, ret);
+		ret = regmap_update_bits(s2abb01->regmap, S2ABB01_REG_LDO_CTRL,
 			S2ABB01_BBLDO_EN_MASK, S2ABB01_BBLDO_EN_MASK);
+		if (ret)
+			pr_err("%s: eMMC LDO i2c update fail.(%d)", __func__, ret);
 	}
 
 	return 0;
@@ -104,10 +114,15 @@ static int s2abb01_resume(struct device *dev)
 	struct s2abb01_dev *s2abb01 = i2c_get_clientdata(i2c);
 
 	if (s2abb01->suspend_on_ctrl) {
-		regmap_update_bits(s2abb01->regmap, S2ABB01_REG_BB_OUT,
+		int ret = 0;
+		ret = regmap_update_bits(s2abb01->regmap, S2ABB01_REG_BB_OUT,
 			S2ABB01_BBLDO_EN_MASK, 0x00);
-		regmap_update_bits(s2abb01->regmap, S2ABB01_REG_LDO_CTRL,
+		if (ret)
+			pr_err("%s: eMMC BUCK i2c update fail.(%d)", __func__, ret);
+		ret = regmap_update_bits(s2abb01->regmap, S2ABB01_REG_LDO_CTRL,
 			S2ABB01_BBLDO_EN_MASK, 0x00);
+		if (ret)
+			pr_err("%s: eMMC LDO i2c update fail.(%d)", __func__, ret);
 	}
 
 	return 0;

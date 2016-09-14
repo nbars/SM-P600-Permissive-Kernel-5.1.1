@@ -29,6 +29,7 @@
 #include <linux/workqueue.h>
 #include <video/mipi_display.h>
 #include <plat/dsim.h>
+#include <plat/regs-mipidsim.h>
 #include <plat/mipi_dsi.h>
 #include <plat/gpio-cfg.h>
 #include <asm/system_info.h>
@@ -43,6 +44,9 @@
 #include "dynamic_aid_s6tnmr7_RevC.h"
 
 #include "../s5p_mipi_dsi_lowlevel.h"
+#include <linux/notifier.h>
+#include <linux/fb.h>
+
 
 #define MIN_BRIGHTNESS		0
 #define MAX_BRIGHTNESS		255
@@ -145,6 +149,9 @@ struct lcd_info {
 	int				elvss_delta;
 	unsigned char			**elvss_table;
 	unsigned int			*gamma_level;
+
+	struct notifier_block	fb_notif;
+	unsigned int			fb_unblank;
 };
 
 static struct lcd_info *g_lcd;
@@ -156,23 +163,11 @@ int lcd_get_mipi_state(struct device *dsim_device)
 	struct lcd_info *lcd = g_lcd;
 
 	if (lcd->connected && !lcd->err_count)
-		return mutex_is_locked(&lcd->bl_lock);
+		return 0;
 	else
 		return -ENODEV;
 }
-
-static void s6tnmr7_hw_trigger_set(struct lcd_info *lcd, u32 enable)
-{
-	struct s5p_platform_mipi_dsim *pd = lcd->dsim->pd;
-
-	if (lcd->err_count && enable)
-		return;
-
-	if (pd->trigger_set && pd->fimd1_device)
-		pd->trigger_set(pd->fimd1_device, enable);
-}
 #endif
-
 static int s6tnmr7_write(struct lcd_info *lcd, const u8 *seq, u32 len)
 {
 	int ret;
@@ -183,14 +178,12 @@ static int s6tnmr7_write(struct lcd_info *lcd, const u8 *seq, u32 len)
 		return -EINVAL;
 
 	mutex_lock(&lcd->lock);
-#if defined(CONFIG_FB_HW_TRIGGER)
-	s6tnmr7_hw_trigger_set(lcd, 1);
-#endif
 
 	if (len > 2)
 		cmd = MIPI_DSI_DCS_LONG_WRITE;
-	else if (len == 2)
-		cmd = MIPI_DSI_DCS_SHORT_WRITE_PARAM;
+	else if (len == 2) /*use DCS long write until get patch from S.LSI*/
+		//cmd = MIPI_DSI_DCS_SHORT_WRITE_PARAM;
+		cmd = MIPI_DSI_DCS_LONG_WRITE;
 	else if (len == 1)
 		cmd = MIPI_DSI_DCS_SHORT_WRITE;
 	else {
@@ -328,7 +321,7 @@ te_err:
 	dev_err(&lcd->ld->dev, "%s onoff=%d fail\n", __func__, onoff);
 	return ret;
 }
-
+#ifdef CONFIG_FB_S5P_MDNIE_LITE
 static int s6tnmr7_mdnie_enable(struct lcd_info *lcd, int onoff)
 {
 	int ret;
@@ -391,20 +384,28 @@ int s6tnmr7_mdnie_write(struct device *dev, const u8 *seq, u32 len)
 				start_addr, seq[0]);
 		return -EFAULT;
 	}
+	mutex_lock(&lcd->bl_lock);
 
 	/* Offset addr */
 	addr_buf[0] = LDI_PARAM_LSB;
 	addr_buf[1] = (unsigned char) (lcd->mdnie_addr & 0xff);
 	ret = s6tnmr7_write(lcd, addr_buf, LDI_PARAM_LSB_SIZE);
-	if (ret < 2)
+	if (ret < LDI_PARAM_LSB_SIZE) {
+		dev_err(&lcd->ld->dev, "%s failed LDI_PARAM_LSB\n", __func__);
+		mutex_unlock(&lcd->bl_lock);
 		return -EINVAL;
+	}
 
 	/* Base addr & read data */
 	ret = s6tnmr7_write(lcd, seq, len);
-	if (ret < len)
+	if (ret < len) {
+		dev_err(&lcd->ld->dev, "%s failed data\n", __func__);
+		mutex_unlock(&lcd->bl_lock);
 		return -EINVAL;
+	}
+	mutex_unlock(&lcd->bl_lock);
 
-	/* msleep(17*2); */ /* wait 1 frame */
+	msleep(17);  /* wait 1 frame */
 
 	return len;
 }
@@ -417,14 +418,14 @@ int s6tnmr7_mdnie_set_addr(struct device *dev, int mdnie_addr)
 
 	return 0;
 }
-
+#endif
 static int s6tnmr7_ldi_init(struct lcd_info *lcd)
 {
 	int ret = 0;
 
 	lcd->connected = 1;
 
-	msleep(120);
+	usleep_range(5000, 10000);
 
 	s6tnmr7_read_id(lcd, lcd->id);
 	dev_info(&lcd->ld->dev," %s : id [%x] [%x] [%x] \n", __func__,
@@ -437,7 +438,6 @@ static int s6tnmr7_ldi_init(struct lcd_info *lcd)
 		s6tnmr7_mdnie_enable(lcd, 1);
 #endif
 	s6tnmr7_tsp_te_enable(lcd, 1);
-	msleep(120);
 
 	return ret;
 }
@@ -447,6 +447,7 @@ static int s6tnmr7_ldi_enable(struct lcd_info *lcd)
 	int ret = 0;
 
 	s6tnmr7_write(lcd, SEQ_DISPLAY_ON, ARRAY_SIZE(SEQ_DISPLAY_ON));
+	dev_info(&lcd->ld->dev, "DISPLAY_ON\n");
 
 	return ret;
 }
@@ -479,13 +480,13 @@ static int s6tnmr7_power_on(struct lcd_info *lcd)
 		dev_err(&lcd->ld->dev, "failed to initialize ldi.\n");
 		goto err;
 	}
-
+#if 0 /* move to fb_notifier_callback to write disp on command after fb_unblank */
 	ret = s6tnmr7_ldi_enable(lcd);
 	if (ret) {
 		dev_err(&lcd->ld->dev, "failed to enable ldi.\n");
 		goto err;
 	}
-
+#endif
 	if (!lcd->err_count)
 		enable_irq(lcd->tcon_irq);
 
@@ -547,15 +548,13 @@ static void err_detection_work(struct work_struct *work)
 		return;
 	}
 
-#if defined(CONFIG_FB_HW_TRIGGER)
-	s6tnmr7_hw_trigger_set(lcd, 0);
-#endif
 	s5p_mipi_dsi_disable_by_fimd(lcd->dev);
 	msleep(50);
 	s5p_mipi_dsi_enable_by_fimd(lcd->dev);
 	s6tnmr7_read(lcd, LDI_IRQ_REG, buf, LDI_IRQ_LEN);
 	dev_info(&lcd->ld->dev, "state = [%02X][%02X][%02X]\n",
 			buf[0], buf[1], buf[2]);
+	s6tnmr7_ldi_enable(lcd);
 
 	lcd->err_count = 0;
 	enable_irq(lcd->tcon_irq);
@@ -614,9 +613,10 @@ static int s6tnmr7_init_irq(struct lcd_info *lcd)
 static ssize_t lcd_type_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	char temp[] = "SDC_AMSA05BV01\n";
+	struct lcd_info *lcd = dev_get_drvdata(dev);
 
-	strcat(buf, temp);
+	sprintf(buf, "SDC_%02X%02X%02X\n", lcd->id[0], lcd->id[1], lcd->id[2]);
+
 	return strlen(buf);
 }
 
@@ -761,7 +761,7 @@ static ssize_t temperature_store(struct device *dev,
 		mutex_unlock(&lcd->bl_lock);
 
 		if (lcd->ldi_enable)
-			update_brightness(lcd, 0);
+			update_brightness(lcd, 1);
 
 		dev_info(dev, "%s: %d, %d\n", __func__, value, lcd->temperature );
 	}
@@ -1071,12 +1071,12 @@ static int s6tnmr7_set_acl(struct lcd_info *lcd, u8 force)
 {
 	int ret = 0, level = 0;
 
-	level = ACL_STATUS_25P;
+	level = ACL_STATUS_15P;
 
-	if (lcd->siop_enable || LEVEL_IS_HBM(lcd->auto_brightness))
+	if (lcd->siop_enable) 
 		goto acl_update;
 
-	if (!lcd->acl_enable)
+	if ((!lcd->acl_enable) ||  LEVEL_IS_HBM(lcd->auto_brightness))
 		level = ACL_STATUS_0P;
 
 acl_update:
@@ -1421,7 +1421,6 @@ static int update_brightness(struct lcd_info *lcd, u8 force)
 		lcd->bl = IBRIGHTNESS_HBM;
 
 	if ((force) || ((lcd->ldi_enable) && (lcd->current_bl != lcd->bl))) {
-		msleep(10);
 		s6tnmr7_gamma_ctl(lcd);
 		s6tnmr7_aid_parameter_ctl(lcd, force);
 		s6tnmr7_set_elvss(lcd, force);
@@ -1454,7 +1453,7 @@ static int s6tnmr7_set_brightness(struct backlight_device *bd)
 		return -EINVAL;
 	}
 
-	if (lcd->ldi_enable) {
+	if (lcd->ldi_enable && lcd->fb_unblank) {
 		ret = update_brightness(lcd, 0);
 		if (ret < 0) {
 			dev_err(&lcd->ld->dev, "err in %s\n", __func__);
@@ -1484,6 +1483,49 @@ static struct mdnie_ops s6tnmr7_mdnie_ops = {
 	.set_addr = s6tnmr7_mdnie_set_addr,
 };
 #endif
+static int s6tnmr7_fb_notifier_callback(struct notifier_block *self,
+		unsigned long event, void *data)
+{
+	struct lcd_info *lcd;
+	struct fb_event *blank = (struct fb_event*) data;
+	unsigned int *value = (unsigned int*)blank->data;
+
+	lcd = container_of(self, struct lcd_info, fb_notif);
+
+	if (event == FB_EVENT_BLANK) {
+		switch (*value) {
+		case FB_BLANK_POWERDOWN:
+		case FB_BLANK_NORMAL:
+			lcd->fb_unblank = 0;
+			break;
+		case FB_BLANK_UNBLANK:
+			s6tnmr7_ldi_enable(lcd);
+			lcd->fb_unblank = 1;
+#ifdef CONFIG_FB_HW_TRIGGER
+			/* if FullLMain is 1, Mipi cmd cannot be transmitted. */
+			/* PLM : P150407-04942(T705) */
+			if( lcd->dsim && (readl(lcd->dsim->reg_base + S5P_DSIM_FIFOCTRL)&0x200) ) {
+				s5p_mipi_dsi_func_reset(lcd->dsim);
+				dev_err(&lcd->ld->dev, "%s : Main display payload FIFO is full\n", __func__ );
+			}
+#endif
+			update_brightness(lcd, 0);
+			break;
+		default:
+			break;
+		}
+	}
+
+	return 0;
+}
+
+static int s6tnmr7_register_fb(struct lcd_info *lcd)
+{
+	memset(&lcd->fb_notif, 0, sizeof(lcd->fb_notif));
+	lcd->fb_notif.notifier_call = s6tnmr7_fb_notifier_callback;
+
+	return fb_register_client(&lcd->fb_notif);
+}
 
 static DEVICE_ATTR(power_reduce, 0664, power_reduce_show, power_reduce_store);
 static DEVICE_ATTR(auto_brightness, 0644, auto_brightness_show, auto_brightness_store);
@@ -1558,6 +1600,7 @@ static int s6tnmr7_probe(struct mipi_dsim_device *dsim)
 	lcd->temperature = 1;
 	lcd->current_elvss = 0;
 	lcd->current_hbm = 0;
+	lcd->fb_unblank = 1;
 
 	/* dev_set_drvdata(dsim->dev, lcd); */
 	ret = device_create_file(&lcd->bd->dev, &dev_attr_auto_brightness);
@@ -1567,6 +1610,11 @@ static int s6tnmr7_probe(struct mipi_dsim_device *dsim)
 	ret = sysfs_create_group(&lcd->ld->dev.kobj, &s6tnmr7_attr_group);
 	if (ret < 0)
 		dev_err(&lcd->ld->dev, "failed to add sysfs entries\n");
+
+	ret = s6tnmr7_register_fb(lcd);
+	if (ret)
+		dev_err(&lcd->ld->dev, "failed to register fb notifier chain\n");
+
 
 	mutex_init(&lcd->lock);
 	mutex_init(&lcd->bl_lock);

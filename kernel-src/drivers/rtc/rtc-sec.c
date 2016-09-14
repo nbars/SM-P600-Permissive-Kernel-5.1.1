@@ -549,6 +549,7 @@ static int __devinit s2mps11_rtc_probe(struct platform_device *pdev)
 	return 0;
 
 out_rtc:
+	devm_kfree(&pdev->dev, s2mps11);
 	platform_set_drvdata(pdev, NULL);
 	return ret;
 }

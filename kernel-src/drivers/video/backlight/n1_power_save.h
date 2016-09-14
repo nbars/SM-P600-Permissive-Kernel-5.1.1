@@ -176,6 +176,7 @@ struct tcon_reg_info TCON_BLACK_IMAGE_BLU_ENABLE = {
 		},
 };
 
+
 struct tcon_reg_info *tcon_tune_value[TCON_AUTO_BR_MAX][TCON_LEVEL_MAX][TCON_MODE_MAX] = {
 		/*
 			UI_APP = 0,

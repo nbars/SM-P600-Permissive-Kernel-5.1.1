@@ -23,6 +23,7 @@
 #include <linux/reboot.h>
 #include <linux/kobject.h>
 #include <linux/delay.h>
+
 #include <mach/regs-clock.h>
 #include <mach/devfreq.h>
 #include <mach/asv-exynos.h>
@@ -811,7 +812,6 @@ static void exynos5_int_waiting_mux_status(void)
     }
 }
 
-
 #ifdef CONFIG_EXYNOS_THERMAL
 static unsigned int get_limit_voltage(unsigned int voltage, unsigned int volt_offset)
 {
@@ -1030,8 +1030,8 @@ static int exynos5_int_busfreq_target(struct device *dev,
 		regulator_set_voltage(data->vdd_int, target_volt, target_volt + INT_VOLT_STEP);
 	}
 
-	exynos5_int_waiting_mux_status();
-	
+    exynos5_int_waiting_mux_status();
+
 	curr_int_freq = freq;
 	data->curr_opp = opp;
 out:
@@ -1168,14 +1168,23 @@ static struct exynos_devfreq_platdata default_qos_int_pd = {
 static int exynos5_int_reboot_notifier_call(struct notifier_block *this,
 				   unsigned long code, void *_cmd)
 {
+#if defined(CONFIG_CHAGALL)
+	struct busfreq_data_int *data = container_of(this,
+		struct busfreq_data_int, exynos5_int_reboot_notifier);
+#endif
+
 	pm_qos_update_request(&exynos5_int_qos, 600000);
+
+#if defined(CONFIG_CHAGALL)
+	dev_err(data->dev, "[CH] %s.\n",__func__);
+	if(regulator_set_voltage(data->vdd_int, 1000000, 1000000 + INT_VOLT_STEP))
+	{
+		BUG_ON(1);
+	}
+#endif
 
 	return NOTIFY_DONE;
 }
-
-static struct notifier_block exynos5_int_reboot_notifier = {
-	.notifier_call = exynos5_int_reboot_notifier_call,
-};
 
 #ifdef CONFIG_EXYNOS_THERMAL
 static int exynos5_int_devfreq_tmu_notifier(struct notifier_block *notifier,
@@ -1403,7 +1412,9 @@ static __devinit int exynos5_busfreq_int_probe(struct platform_device *pdev)
 			exynos5_int_devfreq_profile.initial_freq, 40000 * 1000);
 	pm_qos_add_request(&exynos5_int_qos, PM_QOS_DEVICE_THROUGHPUT, pdata->default_qos);
 
-	register_reboot_notifier(&exynos5_int_reboot_notifier);
+	data->exynos5_int_reboot_notifier.notifier_call =
+				    exynos5_int_reboot_notifier_call;
+	register_reboot_notifier(&data->exynos5_int_reboot_notifier);
 
 #ifdef CONFIG_EXYNOS_THERMAL
 	exynos_tmu_add_notifier(&data->tmu_notifier);

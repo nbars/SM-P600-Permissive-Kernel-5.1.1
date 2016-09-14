@@ -129,7 +129,7 @@ obj-$(CONFIG_HA)			+= board-h-thermistor.o
 obj-$(CONFIG_V1A)			+= board-v1-thermistor.o
 obj-$(CONFIG_V2A)			+= board-v1-thermistor.o
 obj-$(CONFIG_CHAGALL)			+= board-v1-thermistor.o
-obj-$(CONFIG_KLIMT)			+= board-v1-thermistor.o
+obj-$(CONFIG_KLIMT)			+= board-klimt-thermistor.o
 obj-$(CONFIG_N1A)			+= board-n1-thermistor.o
 obj-$(CONFIG_N2A)			+= board-n1-thermistor.o
 
@@ -286,6 +286,11 @@ obj-$(CONFIG_BL_SWITCHER)		+= bL_control.o bL_setup.o
 obj-$(CONFIG_MACH_UNIVERSAL5420)	+= sec-reboot.o
 obj-$(CONFIG_SEC_DEBUG)			+= sec_debug.o sec_getlog.o sec_gaf.o
 obj-$(CONFIG_SEC_LOG)			+= sec_log.o
+# Samsung Misc Feature
+obj-$(CONFIG_SEC_MISC)		+= sec_misc.o
+
+# Samsung sec bsp Feature
+obj-$(CONFIG_SEC_BSP)		+= sec_bsp.o
 
 obj-$(CONFIG_SEC_THERMISTOR)		+= sec_thermistor.o
 

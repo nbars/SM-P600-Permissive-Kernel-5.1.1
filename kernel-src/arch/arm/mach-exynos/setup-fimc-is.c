@@ -2468,7 +2468,7 @@ int exynos5420_fimc_is_sensor_clk_on(struct platform_device *pdev, u32 source)
 	}
 
 	clk_set_parent(sclk_isp_sensor, mout_ipll);
-#if defined(CONFIG_V1A) ||  defined(CONFIG_V2A) || defined(CONFIG_CHAGALL) || defined(CONFIG_KLIMT)
+#if defined(CONFIG_V1A) ||  defined(CONFIG_V2A) || defined(CONFIG_CHAGALL)
 	clk_set_rate(sclk_isp_sensor, 18 * 1000000);
 #else
 	clk_set_rate(sclk_isp_sensor, 24 * 1000000);

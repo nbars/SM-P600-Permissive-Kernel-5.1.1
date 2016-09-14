@@ -57,7 +57,7 @@ static const char rmnet_pm_dev[] = "mdm_hsic_pm0";
 #define MDM_MODEM_DELTA	100
 #define MDM_BOOT_TIMEOUT	60000L
 #define MDM_RDUMP_TIMEOUT	120000L
-#define MDM2AP_STATUS_TIMEOUT_MS 120000L
+#define MDM2AP_STATUS_TIMEOUT_MS 20000L
 
 /* Allow a maximum device id of this many digits */
 #define MAX_DEVICE_DIGITS  10
@@ -1280,6 +1280,8 @@ static int mdm_configure_ipc(struct mdm_device *mdev)
 				   __func__);
 			goto fatal_err;
 		}
+		s3c_gpio_cfgpin(MDM_GPIO(MDM2AP_PBLRDY), S3C_GPIO_SFN(0xf));
+		s3c_gpio_setpull(MDM_GPIO(MDM2AP_PBLRDY), S3C_GPIO_PULL_NONE);
 	}
 	if (GPIO_IS_VALID(MDM_GPIO(AP2MDM_PMIC_PWR_EN))) {
 		if (gpio_request(MDM_GPIO(AP2MDM_PMIC_PWR_EN),
@@ -1288,6 +1290,9 @@ static int mdm_configure_ipc(struct mdm_device *mdev)
 				   __func__);
 			goto fatal_err;
 		}
+		s3c_gpio_cfgpin(MDM_GPIO(AP2MDM_PMIC_PWR_EN), S3C_GPIO_OUTPUT);
+		s3c_gpio_setpull(MDM_GPIO(AP2MDM_PMIC_PWR_EN), S3C_GPIO_PULL_NONE);
+		s5p_gpio_set_drvstr(MDM_GPIO(AP2MDM_PMIC_PWR_EN), S5P_GPIO_DRVSTR_LV4);
 	}
 	if (GPIO_IS_VALID(MDM_GPIO(AP2MDM_SOFT_RESET))) {
 		if (gpio_request(MDM_GPIO(AP2MDM_SOFT_RESET),
@@ -1296,6 +1301,8 @@ static int mdm_configure_ipc(struct mdm_device *mdev)
 				   __func__);
 			goto fatal_err;
 		}
+		s3c_gpio_cfgpin(MDM_GPIO(AP2MDM_SOFT_RESET), S3C_GPIO_OUTPUT);
+		s3c_gpio_setpull(MDM_GPIO(AP2MDM_SOFT_RESET), S3C_GPIO_PULL_NONE);
 	}
 	if (GPIO_IS_VALID(MDM_GPIO(AP2MDM_WAKEUP))) {
 		if (gpio_request(MDM_GPIO(AP2MDM_WAKEUP), "AP2MDM_WAKEUP")) {
@@ -1303,6 +1310,8 @@ static int mdm_configure_ipc(struct mdm_device *mdev)
 				   __func__);
 			goto fatal_err;
 		}
+		s3c_gpio_cfgpin(MDM_GPIO(AP2MDM_WAKEUP), S3C_GPIO_OUTPUT);
+		s3c_gpio_setpull(MDM_GPIO(AP2MDM_WAKEUP), S3C_GPIO_PULL_NONE);
 	}
 	if (GPIO_IS_VALID(MDM_GPIO(AP2MDM_CHNLRDY))) {
 		if (gpio_request(MDM_GPIO(AP2MDM_CHNLRDY), "AP2MDM_CHNLRDY")) {
@@ -1320,11 +1329,23 @@ static int mdm_configure_ipc(struct mdm_device *mdev)
 	}
 #endif
 	gpio_direction_output(MDM_GPIO(AP2MDM_STATUS), 0);
+	s3c_gpio_cfgpin(MDM_GPIO(AP2MDM_STATUS), S3C_GPIO_OUTPUT);
+	s3c_gpio_setpull(MDM_GPIO(AP2MDM_STATUS), S3C_GPIO_PULL_NONE);
+
 	gpio_direction_output(MDM_GPIO(AP2MDM_ERRFATAL), 0);
+	s3c_gpio_cfgpin(MDM_GPIO(AP2MDM_ERRFATAL), S3C_GPIO_OUTPUT);
+	s3c_gpio_setpull(MDM_GPIO(AP2MDM_ERRFATAL), S3C_GPIO_PULL_NONE);
+
 	if (GPIO_IS_VALID(MDM_GPIO(AP2MDM_CHNLRDY)))
 		gpio_direction_output(MDM_GPIO(AP2MDM_CHNLRDY), 0);
+
 	gpio_direction_input(MDM_GPIO(MDM2AP_STATUS));
+	s3c_gpio_cfgpin(MDM_GPIO(MDM2AP_STATUS), S3C_GPIO_SFN(0xf));
+	s3c_gpio_setpull(MDM_GPIO(MDM2AP_STATUS), S3C_GPIO_PULL_NONE);
+
 	gpio_direction_input(MDM_GPIO(MDM2AP_ERRFATAL));
+	s3c_gpio_cfgpin(MDM_GPIO(MDM2AP_ERRFATAL), S3C_GPIO_SFN(0xf));
+	s3c_gpio_setpull(MDM_GPIO(MDM2AP_ERRFATAL), S3C_GPIO_PULL_NONE);
 
 	mdev->mdm_queue = alloc_workqueue("mdm_queue", 0, 0);
 	if (!mdev->mdm_queue) {
@@ -1368,6 +1389,7 @@ static int mdm_configure_ipc(struct mdm_device *mdev)
 		goto errfatal_err;
 	}
 	mdev->mdm_errfatal_irq = irq;
+	enable_irq_wake(irq);
 
 errfatal_err:
 	 /* status irq */
@@ -1388,6 +1410,7 @@ errfatal_err:
 		goto status_err;
 	}
 	mdev->mdm_status_irq = irq;
+	enable_irq_wake(irq);
 
 status_err:
 	if (GPIO_IS_VALID(MDM_GPIO(MDM2AP_PBLRDY))) {
