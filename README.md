@@ -16,8 +16,8 @@ This version is currently based on P600XXUDOJ3_P600DBTDOK1 (Stock Samsung firmwa
 - /toolchains - The ARM cross compiler toolchain for building the kernel
 
 ## Building
-Run the build.sh script. The resulting boot image will
-be saved in the directory named **out**. 
+Run the build.sh script. The resulting boot image will be saved in the directory named **out**.
+For succesfully building the scripts needs **mkbootimg** and **cpio**.
 
 ## Flashing
 
