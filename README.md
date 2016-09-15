@@ -1,9 +1,12 @@
 # SM-P600-Permissive-Kernel
 
+**!!! Some security features of the kernel are disabled, use it on you're own risk !!!**
+
 This is a permissive kernel for the SM-P600. This kernel is needed, if you
-for example like to use linux deploy on android.
+for example like to use Linux Deploy on Android. 
 
 This version is currently based on P600XXUDOJ3_P600DBTDOK1 (Stock Samsung firmware - Android 5.1.1).
+
 
 ## Directory structure
 - /backup - Backup of the SM-P600 boot partition
@@ -23,3 +26,11 @@ Select boot.tar.md5 as PDA file
 
 ##### Using heimdall
 	heimdall flash --BOOT heimdall_boot.img
+	
+	
+#### Known bugs/issues
+- With CONFIG_SECURITY_SELINUX=n the kernel wont boot
+- Compiling with ccache leads to an unusable kernel
+- After flashing this kernel, all you're WIFI passwords are lost after restarting you're device. (**TODO**)
+- After flashing this kernel you're root access is gone, install e.g. Super-SU
+again to patch the boot image again.
