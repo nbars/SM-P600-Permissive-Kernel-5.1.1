@@ -17,7 +17,7 @@ This version is currently based on P600XXUDOJ3_P600DBTDOK1 (Stock Samsung firmwa
 
 ## Building
 Run the build.sh script. The resulting boot image will be saved in the directory named **out**.
-For succesfully building the script needs following packages: **mkbootimg**,**cpio**.
+For building the kernel, following packages are required: **mkbootimg**,**cpio**.
 
 ## Flashing
 
@@ -25,12 +25,12 @@ For succesfully building the script needs following packages: **mkbootimg**,**cp
 Select boot.tar.md5 as PDA file
 
 ##### Using heimdall
-	heimdall flash --BOOT heimdall_boot.img
-	
-	
+    heimdall flash --BOOT heimdall_boot.img
+    
+    
 #### Known bugs/issues
-- With CONFIG_SECURITY_SELINUX=n the kernel wont boot
+- With CONFIG_SECURITY_SELINUX=n the kernel won't boot
 - Compiling with ccache leads to an unusable kernel
-- After flashing this kernel, all you're WIFI passwords are lost after restarting you're device. (see [#1](https://github.com/nbars/SM-P600-Permissive-Kernel/issues/1))
-- After flashing this kernel you're root access is gone, install e.g. Super-SU
-again to patch the boot image again.
+- After flashing this kernel, all you're WIFI passwords are lost after restarting your device. (see [#1](https://github.com/nbars/SM-P600-Permissive-Kernel/issues/1))
+- After flashing this kernel your root access is gone, install, e.g. Super-SU
+again to patch the boot image.
